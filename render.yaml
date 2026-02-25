@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: voice-brainstorm
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -w 2 -b 0.0.0.0:$PORT app:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DASHSCOPE_API_KEY
+        sync: false
+      - key: QWEN_MODEL
+        value: qwen-plus
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false

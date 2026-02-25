@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>灵感风暴 - AI头脑风暴助手</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- 侧边栏：历史记录 -->
+        <aside id="sidebar" class="sidebar">
+            <div class="sidebar-header">
+                <h2>历史记录</h2>
+                <button id="closeSidebar" class="icon-btn" title="关闭">&times;</button>
+            </div>
+            <div id="historyList" class="history-list">
+                <p class="empty-hint">暂无记录</p>
+            </div>
+        </aside>
+        <div id="overlay" class="overlay"></div>
+
+        <!-- 主界面 -->
+        <main class="main">
+            <header class="top-bar">
+                <button id="openSidebar" class="icon-btn" title="历史记录">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+                </button>
+                <h1 class="app-title">灵感风暴</h1>
+                <button id="newSession" class="icon-btn" title="新对话">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                </button>
+            </header>
+
+            <!-- 欢迎界面 -->
+            <div id="welcomeView" class="welcome-view">
+                <div class="welcome-content">
+                    <div class="welcome-icon">
+                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="1.5">
+                            <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+                        </svg>
+                    </div>
+                    <h2>记录你的灵感</h2>
+                    <p>按下麦克风按钮，说出你的想法，<br>AI将与你进行头脑风暴，帮你完善创意。</p>
+                </div>
+            </div>
+
+            <!-- 对话界面 -->
+            <div id="chatView" class="chat-view hidden">
+                <div id="chatMessages" class="chat-messages"></div>
+            </div>
+
+            <!-- 输入区域 -->
+            <div class="input-area">
+                <div class="input-row">
+                    <div class="input-wrapper">
+                        <textarea id="textInput" rows="1" placeholder="输入你的想法，或按麦克风语音输入..."></textarea>
+                    </div>
+                    <button id="voiceBtn" class="voice-btn" title="语音输入">
+                        <svg class="mic-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/>
+                            <path d="M19 10v2a7 7 0 01-14 0v-2"/>
+                            <line x1="12" y1="19" x2="12" y2="23"/>
+                            <line x1="8" y1="23" x2="16" y2="23"/>
+                        </svg>
+                        <span class="recording-indicator"></span>
+                    </button>
+                    <button id="sendBtn" class="send-btn" title="发送">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="22" y1="2" x2="11" y2="13"/>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                        </svg>
+                    </button>
+                </div>
+                <div id="voiceStatus" class="voice-status hidden">
+                    <span class="pulse-dot"></span>
+                    <span id="voiceStatusText">正在录音...</span>
+                </div>
+                <div id="actionBar" class="action-bar hidden">
+                    <button id="summarizeBtn" class="action-btn">整理总结</button>
+                    <button id="exportBtn" class="action-btn">导出内容</button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
