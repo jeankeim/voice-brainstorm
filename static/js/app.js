@@ -39,6 +39,13 @@
     // ========== 语音识别 (使用后端 DashScope ASR) ==========
     let mediaRecorder = null;
     let audioChunks = [];
+    let recordingStartTime = null;
+    let recordingTimer = null;
+    let audioContext = null;
+    let analyser = null;
+    let dataArray = null;
+    let animationId = null;
+    const MAX_RECORDING_SECONDS = 20;  // 最大录音时长
 
     function initSpeechRecognition() {
         console.log("初始化语音识别...");
@@ -53,13 +60,101 @@
         console.log("MediaRecorder 支持检测通过");
         console.log("voiceBtn 元素:", els.voiceBtn);
 
-        // 使用后端 ASR，前端只负责录音
+        // 使用后端 ASR ，前端只负责录音
         state.recognition = {
             start: startRecording,
             stop: stopRecording
         };
         
         console.log("语音识别初始化完成");
+    }
+
+    function formatDuration(seconds) {
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    function updateRecordingTimer() {
+        if (!recordingStartTime) return;
+        const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+        const remaining = MAX_RECORDING_SECONDS - elapsed;
+        const durationText = formatDuration(elapsed);
+        
+        // 显示倒计时，最后 5 秒变红
+        const isWarning = remaining <= 5;
+        const timerClass = isWarning ? 'recording-timer warning' : 'recording-timer';
+        els.voiceStatusText.innerHTML = `正在录音 <span class="${timerClass}">${durationText}</span> / 20秒`;
+        
+        // 超过 20 秒自动停止
+        if (elapsed >= MAX_RECORDING_SECONDS) {
+            console.log("录音超过 20 秒，自动停止");
+            stopRecording();
+        }
+    }
+
+    function initAudioVisualizer(stream) {
+        // 创建音频分析器
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(stream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+        
+        const bufferLength = analyser.frequencyBinCount;
+        dataArray = new Uint8Array(bufferLength);
+        
+        // 创建波形容器
+        let waveContainer = document.getElementById('audioWaveform');
+        if (!waveContainer) {
+            waveContainer = document.createElement('div');
+            waveContainer.id = 'audioWaveform';
+            waveContainer.className = 'audio-waveform';
+            // 创建波形条
+            for (let i = 0; i < 20; i++) {
+                const bar = document.createElement('div');
+                bar.className = 'wave-bar';
+                waveContainer.appendChild(bar);
+            }
+            els.voiceStatus.appendChild(waveContainer);
+        }
+        
+        const bars = waveContainer.querySelectorAll('.wave-bar');
+        
+        function animate() {
+            if (!state.isRecording) return;
+            
+            analyser.getByteFrequencyData(dataArray);
+            
+            // 更新波形条高度
+            for (let i = 0; i < bars.length; i++) {
+                const dataIndex = Math.floor(i * (bufferLength / bars.length));
+                const value = dataArray[dataIndex];
+                const height = Math.max(4, (value / 255) * 40);
+                bars[i].style.height = `${height}px`;
+            }
+            
+            animationId = requestAnimationFrame(animate);
+        }
+        
+        animate();
+    }
+
+    function stopAudioVisualizer() {
+        if (animationId) {
+            cancelAnimationFrame(animationId);
+            animationId = null;
+        }
+        if (audioContext) {
+            audioContext.close();
+            audioContext = null;
+        }
+        // 重置波形条
+        const waveContainer = document.getElementById('audioWaveform');
+        if (waveContainer) {
+            const bars = waveContainer.querySelectorAll('.wave-bar');
+            bars.forEach(bar => bar.style.height = '4px');
+        }
     }
 
     async function startRecording() {
@@ -83,6 +178,14 @@
             mediaRecorder.onstop = async () => {
                 console.log("onstop 触发, audioChunks 长度:", audioChunks.length);
                 
+                // 停止计时器和波形动画
+                if (recordingTimer) {
+                    clearInterval(recordingTimer);
+                    recordingTimer = null;
+                }
+                stopAudioVisualizer();
+                recordingStartTime = null;
+                
                 if (audioChunks.length === 0) {
                     console.warn("没有收集到音频数据");
                     alert("录音时间太短，请重试");
@@ -100,10 +203,17 @@
 
             mediaRecorder.start(100); // 每100ms收集一次数据
             
+            // 开始计时
+            recordingStartTime = Date.now();
+            updateRecordingTimer();
+            recordingTimer = setInterval(updateRecordingTimer, 1000);
+            
+            // 初始化波形动画
+            initAudioVisualizer(stream);
+            
             state.isRecording = true;
             els.voiceBtn.classList.add("recording");
             els.voiceStatus.classList.remove("hidden");
-            els.voiceStatusText.textContent = "正在录音，请说话...";
             console.log("录音开始");
             
         } catch (err) {
@@ -668,6 +778,20 @@
             } else if (file.type.startsWith('image/')) {
                 // 对于图片，使用 R2 公开 URL 发送
                 await sendImageMessage(file, data.url);
+            } else if (file.name.toLowerCase().endsWith('.pdf')) {
+                // 处理 PDF 文件
+                els.welcomeView.classList.add('hidden');
+                els.chatView.classList.remove('hidden');
+                addFileMessage('user', file, data.url);
+                
+                if (data.pdf_content && data.pdf_content.success) {
+                    const { text, pages } = data.pdf_content;
+                    els.textInput.value = `我上传了一个 PDF 文件"${file.name}"，共 ${pages} 页，内容如下：\n\n${text}\n\n请帮我分析这个 PDF 的内容。`;
+                    await sendMessage();
+                } else {
+                    els.textInput.value = `我上传了一个 PDF 文件"${file.name}"，但无法提取内容。链接：${data.url}\n\n请帮我分析。`;
+                    await sendMessage();
+                }
             } else {
                 // 切换到对话视图
                 els.welcomeView.classList.add('hidden');
@@ -716,6 +840,54 @@
         scrollToBottom();
     }
 
+    // ========== 示例提示词 ==========
+    function initExamplePrompts() {
+        document.querySelectorAll('.example-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const prompt = btn.dataset.prompt;
+                els.textInput.value = prompt;
+                autoResizeTextarea();
+                sendMessage();
+            });
+        });
+    }
+
+    // ========== 新手引导 ==========
+    function initGuide() {
+        // 检查是否已看过引导
+        const hasSeenGuide = localStorage.getItem('has_seen_guide');
+        if (hasSeenGuide) return;
+        
+        const guideOverlay = document.getElementById('guideOverlay');
+        const steps = [
+            document.getElementById('guideStep1'),
+            document.getElementById('guideStep2'),
+            document.getElementById('guideStep3')
+        ];
+        let currentStep = 0;
+        
+        // 显示引导
+        guideOverlay.classList.remove('hidden');
+        
+        // 绑定下一步按钮
+        guideOverlay.querySelectorAll('.guide-next').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const nextStep = btn.dataset.step;
+                
+                if (nextStep === 'finish') {
+                    // 完成引导
+                    guideOverlay.classList.add('hidden');
+                    localStorage.setItem('has_seen_guide', 'true');
+                } else {
+                    // 切换到下一步
+                    steps[currentStep].classList.add('hidden');
+                    currentStep = parseInt(nextStep) - 1;
+                    steps[currentStep].classList.remove('hidden');
+                }
+            });
+        });
+    }
+
     // ========== 事件绑定 ==========
     function bindEvents() {
         els.voiceBtn.addEventListener("click", toggleRecording);
@@ -736,6 +908,7 @@
         });
 
         initFileUpload();
+        initExamplePrompts();
     }
 
     // ========== 访客标识管理 ==========
@@ -842,6 +1015,9 @@
         // 初始化访客标识并获取使用信息
         getOrCreateVisitorId();
         await fetchUsageInfo();
+        
+        // 初始化新手引导
+        initGuide();
 
         // 检查API配置
         try {

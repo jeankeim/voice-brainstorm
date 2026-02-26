@@ -444,11 +444,41 @@ html, body {
 
 .voice-status {
     display: flex;
+    flex-direction: column;
     align-items: center;
     gap: 8px;
     padding: 8px 0 0;
     font-size: 13px;
     color: #ef4444;
+}
+
+.recording-timer {
+    font-family: 'SF Mono', monospace;
+    font-weight: 600;
+    margin-left: 4px;
+}
+
+.recording-timer.warning {
+    color: #ef4444;
+    animation: pulse 1s infinite;
+}
+
+/* 音频波形动画 */
+.audio-waveform {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    height: 40px;
+    margin-top: 4px;
+}
+
+.wave-bar {
+    width: 4px;
+    height: 4px;
+    background: #ef4444;
+    border-radius: 2px;
+    transition: height 0.05s ease;
 }
 
 .pulse-dot {
@@ -567,6 +597,101 @@ html, body {
 .markdown-content li { margin: 3px 0; }
 .markdown-content strong { font-weight: 600; }
 .markdown-content em { font-style: italic; }
+
+/* 示例提示词 */
+.example-prompts {
+    margin-top: 32px;
+    text-align: center;
+}
+
+.example-title {
+    font-size: 14px;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+}
+
+.example-list {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 10px;
+    max-width: 400px;
+    margin: 0 auto;
+}
+
+.example-btn {
+    padding: 10px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    font-size: 14px;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.example-btn:hover {
+    background: var(--primary-light);
+    color: white;
+    border-color: var(--primary-light);
+    transform: translateY(-2px);
+}
+
+/* 新手引导 */
+.guide-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: fadeIn 0.3s ease;
+}
+
+.guide-step {
+    background: var(--surface);
+    padding: 32px;
+    border-radius: var(--radius);
+    max-width: 320px;
+    text-align: center;
+    animation: slideUp 0.3s ease;
+}
+
+.guide-step.hidden {
+    display: none;
+}
+
+.guide-content h3 {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: var(--text-primary);
+}
+
+.guide-content p {
+    font-size: 15px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    margin-bottom: 24px;
+}
+
+.guide-next {
+    padding: 12px 32px;
+    background: var(--primary);
+    color: white;
+    border: none;
+    border-radius: 24px;
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.guide-next:hover {
+    background: var(--primary-light);
+    transform: scale(1.02);
+}
 
 /* 使用次数徽章 */
 .usage-badge {

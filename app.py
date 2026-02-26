@@ -291,7 +291,7 @@ def chat():
 
 # ========== 访客使用限制配置 ==========
 # 每日免费使用次数限制
-DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "20"))
+DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "10"))
 # 访客使用记录: {visitor_id: {"count": int, "date": str(YYYY-MM-DD)}}
 visitor_usage = {}
 
@@ -397,6 +397,78 @@ def increment_usage():
     )
 
 
+def extract_pdf_text(file_data):
+    """Extract text content from PDF file."""
+    try:
+        import io
+        
+        # 尝试导入 PyPDF2 或 pypdf
+        try:
+            from PyPDF2 import PdfReader
+        except ImportError:
+            try:
+                from pypdf import PdfReader
+            except ImportError:
+                return {
+                    "text": "",
+                    "pages": 0,
+                    "success": False,
+                    "error": "PDF 库未安装，请运行: pip install PyPDF2"
+                }
+        
+        pdf_file = io.BytesIO(file_data)
+        reader = PdfReader(pdf_file)
+        
+        text_content = []
+        total_pages = len(reader.pages)
+        
+        print(f"PDF 总页数: {total_pages}")
+        
+        for i, page in enumerate(reader.pages):
+            try:
+                page_text = page.extract_text()
+                if page_text and page_text.strip():
+                    text_content.append(f"--- 第 {i+1} 页 ---\n{page_text}")
+                    print(f"第 {i+1} 页提取成功，长度: {len(page_text)}")
+                else:
+                    print(f"第 {i+1} 页无文本内容（可能是扫描件或图片）")
+            except Exception as e:
+                print(f"提取第 {i+1} 页失败: {e}")
+                continue
+        
+        full_text = "\n\n".join(text_content)
+        
+        # 如果内容太长，截断并提示
+        max_length = 15000  # 约 5000 汉字
+        if len(full_text) > max_length:
+            full_text = full_text[:max_length] + "\n\n... (内容已截断，仅显示前 15000 字符)"
+        
+        # 如果没有提取到任何文本，可能是扫描件
+        if not full_text.strip():
+            return {
+                "text": "",
+                "pages": total_pages,
+                "success": False,
+                "error": "无法提取文本，该 PDF 可能是扫描件或图片格式"
+            }
+        
+        return {
+            "text": full_text,
+            "pages": total_pages,
+            "success": True
+        }
+    except Exception as e:
+        print(f"PDF 提取失败: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return {
+            "text": "",
+            "pages": 0,
+            "success": False,
+            "error": str(e)
+        }
+
+
 @app.route("/api/upload", methods=["POST"])
 def upload_file():
     """Upload file to R2 storage and return public URL."""
@@ -429,12 +501,22 @@ def upload_file():
             content_type="application/json"
         )
     
+    # 如果是 PDF，提取文本内容
+    pdf_content = None
+    if file.filename.lower().endswith('.pdf'):
+        pdf_content = extract_pdf_text(file_data)
+    
+    response_data = {
+        "url": url,
+        "filename": file.filename,
+        "size": len(file_data)
+    }
+    
+    if pdf_content:
+        response_data["pdf_content"] = pdf_content
+    
     return Response(
-        json.dumps({
-            "url": url,
-            "filename": file.filename,
-            "size": len(file_data)
-        }).encode("utf-8"),
+        json.dumps(response_data).encode("utf-8"),
         content_type="application/json"
     )
 
@@ -479,11 +561,10 @@ def speech_to_text():
         audio_data = audio_file.read()
         print(f"收到音频数据: {len(audio_data)} bytes")
         
-        # Validate audio data
-        if len(audio_data) < 100:
+        # Validate audio data (至少 3KB，约 0.5 秒音频)
+        if len(audio_data) < 3000:
             return Response(
-                json.dumps({"error": "音频数据太短，请重新录制"}).encode("utf-8"),
-                status=400,
+                json.dumps({"text": "", "warning": "音频太短，已跳过"}).encode("utf-8"),
                 content_type="application/json"
             )
         

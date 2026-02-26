@@ -42,6 +42,42 @@
                     </div>
                     <h2>记录你的灵感</h2>
                     <p>按下麦克风按钮，说出你的想法，<br>AI将与你进行头脑风暴，帮你完善创意。</p>
+                    
+                    <!-- 示例提示词 -->
+                    <div class="example-prompts">
+                        <p class="example-title">试试这些示例：</p>
+                        <div class="example-list">
+                            <button class="example-btn" data-prompt="我想做一个帮助大学生找兼职的APP">💼 大学生兼职平台</button>
+                            <button class="example-btn" data-prompt="帮我头脑风暴一个环保主题的创业项目">🌱 环保创业项目</button>
+                            <button class="example-btn" data-prompt="我想开一家社区咖啡店，帮我分析一下">☕ 社区咖啡店</button>
+                            <button class="example-btn" data-prompt="设计一个帮助老年人使用智能手机的产品">👴 适老化产品设计</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 新手引导遮罩 -->
+            <div id="guideOverlay" class="guide-overlay hidden">
+                <div class="guide-step" id="guideStep1">
+                    <div class="guide-content">
+                        <h3>👋 欢迎使用灵感风暴</h3>
+                        <p>我是你的 AI 头脑风暴助手，通过深度提问帮你完善想法。</p>
+                        <button class="guide-next" data-step="2">下一步</button>
+                    </div>
+                </div>
+                <div class="guide-step hidden" id="guideStep2">
+                    <div class="guide-content">
+                        <h3>🎤 语音输入</h3>
+                        <p>点击麦克风按钮，直接说出你的想法，支持语音识别。</p>
+                        <button class="guide-next" data-step="3">下一步</button>
+                    </div>
+                </div>
+                <div class="guide-step hidden" id="guideStep3">
+                    <div class="guide-content">
+                        <h3>📎 文件上传</h3>
+                        <p>支持上传图片、PDF、文本文件，AI 可以直接分析内容。</p>
+                        <button class="guide-next" data-step="finish">开始使用</button>
+                    </div>
                 </div>
             </div>
 
