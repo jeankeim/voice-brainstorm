@@ -34,23 +34,32 @@ MODEL_VISION = "qwen-vl-plus"      # 图片分析
 def select_model(messages):
     """根据消息内容选择合适模型。
     
-    如果有图片消息，使用 qwen-vl-plus
-    否则使用 qwen-plus
+    只检查最后一条用户消息是否有图片：
+    - 如果有图片，使用 qwen-vl-plus
+    - 否则使用 qwen-plus（包括 PDF 文本、普通文本等）
     """
-    for msg in messages:
-        if msg.get("role") == "user":
-            content = msg.get("content", [])
-            # 检查是否是多模态格式（包含图片）
-            if isinstance(content, list):
-                for item in content:
-                    if isinstance(item, dict) and item.get("type") == "image_url":
-                        print(f"[模型选择] 检测到多模态格式图片，使用 {MODEL_VISION}")
-                        return MODEL_VISION
-            # 检查是否有 image_url 字段（前端原始格式）
-            if msg.get("image_url"):
-                print(f"[模型选择] 检测到 image_url 字段，使用 {MODEL_VISION}")
+    # 只检查最后一条用户消息
+    user_messages = [msg for msg in messages if msg.get("role") == "user"]
+    if not user_messages:
+        print(f"[模型选择] 无用户消息，使用 {MODEL_TEXT}")
+        return MODEL_TEXT
+    
+    last_user_msg = user_messages[-1]
+    content = last_user_msg.get("content", [])
+    
+    # 检查是否是多模态格式（包含图片）
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "image_url":
+                print(f"[模型选择] 最后消息包含多模态图片，使用 {MODEL_VISION}")
                 return MODEL_VISION
-    print(f"[模型选择] 无图片，使用 {MODEL_TEXT}")
+    
+    # 检查是否有 image_url 字段（前端原始格式）
+    if last_user_msg.get("image_url"):
+        print(f"[模型选择] 最后消息包含 image_url，使用 {MODEL_VISION}")
+        return MODEL_VISION
+    
+    print(f"[模型选择] 最后消息无图片，使用 {MODEL_TEXT}")
     return MODEL_TEXT
 
 # Cloudflare R2 Configuration
@@ -145,7 +154,9 @@ SYSTEM_PROMPT = """你是专业的头脑风暴助手，任务是通过深度提�
 - 可以分析图片并基于图片内容进行头脑风暴
 - 提问有深度，能引发思考
 - 总结全面、结构清晰、有可操作性
-- 每次回复控制在4000字以内，尽量保持简洁有力"""
+- 【重要】每次回复必须控制在2000字以内，优先保证核心内容的完整性
+- 如内容过多，请精简次要信息，确保在限制内完成回复
+- 避免冗长铺垫，直接切入重点"""
 
 
 def call_dashscope_stream(messages):
