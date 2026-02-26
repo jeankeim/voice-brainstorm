@@ -833,6 +833,8 @@
                 await sendMessage();
             } else if (file.type.startsWith('image/')) {
                 // 对于图片，使用 R2 公开 URL 发送
+                // 添加短暂延迟，确保 R2 图片完全可用
+                await new Promise(r => setTimeout(r, 800));
                 await sendImageMessage(file, data.url);
             } else if (file.name.toLowerCase().endsWith('.pdf')) {
                 // 处理 PDF 文件

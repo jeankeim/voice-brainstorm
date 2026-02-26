@@ -44,10 +44,13 @@ def select_model(messages):
             if isinstance(content, list):
                 for item in content:
                     if isinstance(item, dict) and item.get("type") == "image_url":
+                        print(f"[模型选择] 检测到多模态格式图片，使用 {MODEL_VISION}")
                         return MODEL_VISION
-            # 检查是否有 image_url 字段
+            # 检查是否有 image_url 字段（前端原始格式）
             if msg.get("image_url"):
+                print(f"[模型选择] 检测到 image_url 字段，使用 {MODEL_VISION}")
                 return MODEL_VISION
+    print(f"[模型选择] 无图片，使用 {MODEL_TEXT}")
     return MODEL_TEXT
 
 # Cloudflare R2 Configuration
@@ -97,9 +100,11 @@ def upload_to_r2(file_data, filename, content_type):
 
 SYSTEM_PROMPT = """你是专业的头脑风暴助手，任务是通过深度提问帮助用户完善想法。
 
-能力说明：
-- 你可以直接分析用户上传的图片内容，包括图片中的场景、人物、文字、图表等
-- 结合图片内容进行针对性的头脑风暴引导
+重要能力说明：
+- 你具备多模态能力，可以直接分析用户上传的图片内容
+- 你可以识别图片中的场景、人物、文字、图表、产品等所有可见元素
+- 当用户上传图片时，你必须先详细分析图片内容，再基于分析进行头脑风暴引导
+- 不要说自己无法查看图片，你确实可以分析图片
 
 工作流程：
 1. 用户分享想法或上传图片后，先理解其核心内容，然后提出第一个深入问题引导进一步思考。
@@ -212,13 +217,17 @@ def chat():
         elif msg.get("role") == "user" and msg.get("image_url"):
             # Convert to qwen-vl multimodal format
             # qwen-vl uses 'image_url' type with 'url' field
+            image_url = msg["image_url"]
+            print(f"[图片分析] 处理图片消息，URL: {image_url[:80]}...")
             content = []
             if msg.get("content"):
                 content.append({"type": "text", "text": msg["content"]})
+                print(f"[图片分析] 添加文本内容: {msg['content'][:50]}...")
             content.append({
                 "type": "image_url",
-                "image_url": {"url": msg["image_url"]}
+                "image_url": {"url": image_url}
             })
+            print(f"[图片分析] 已转换为多模态格式，content 长度: {len(content)}")
             converted_messages.append({"role": "user", "content": content})
         else:
             converted_messages.append(msg)
