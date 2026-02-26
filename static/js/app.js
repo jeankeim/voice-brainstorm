@@ -8,6 +8,8 @@
         isRecording: false,
         isStreaming: false,
         recognition: null,
+        visitorId: null,        // 访客唯一标识
+        usageInfo: null,        // 使用情况信息
     };
 
     // ========== DOM元素 ==========
@@ -30,80 +32,164 @@
         summarizeBtn: $("#summarizeBtn"),
         exportBtn: $("#exportBtn"),
         newSession: $("#newSession"),
+        fileBtn: $("#fileBtn"),
+        fileInput: $("#fileInput"),
     };
 
-    // ========== 语音识别 ==========
+    // ========== 语音识别 (使用后端 DashScope ASR) ==========
+    let mediaRecorder = null;
+    let audioChunks = [];
+
     function initSpeechRecognition() {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) {
-            console.warn("浏览器不支持语音识别");
-            els.voiceBtn.title = "当前浏览器不支持语音识别，请使用Chrome";
+        console.log("初始化语音识别...");
+        
+        // 检查浏览器是否支持 MediaRecorder
+        if (!navigator.mediaDevices || !window.MediaRecorder) {
+            console.warn("浏览器不支持录音");
+            els.voiceBtn.title = "当前浏览器不支持录音，请使用Chrome/Edge/Safari";
             return;
         }
+        
+        console.log("MediaRecorder 支持检测通过");
+        console.log("voiceBtn 元素:", els.voiceBtn);
 
-        const recognition = new SpeechRecognition();
-        recognition.lang = "zh-CN";
-        recognition.continuous = true;
-        recognition.interimResults = true;
-
-        let finalTranscript = "";
-
-        recognition.onresult = (event) => {
-            let interim = "";
-            for (let i = event.resultIndex; i < event.results.length; i++) {
-                const transcript = event.results[i][0].transcript;
-                if (event.results[i].isFinal) {
-                    finalTranscript += transcript;
-                } else {
-                    interim += transcript;
-                }
-            }
-            els.textInput.value = finalTranscript + interim;
-            autoResizeTextarea();
+        // 使用后端 ASR，前端只负责录音
+        state.recognition = {
+            start: startRecording,
+            stop: stopRecording
         };
+        
+        console.log("语音识别初始化完成");
+    }
 
-        recognition.onstart = () => {
+    async function startRecording() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            
+            // 使用 MediaRecorder 录制音频
+            const mimeType = MediaRecorder.isTypeSupported('audio/webm') 
+                ? 'audio/webm' 
+                : 'audio/mp4';
+            
+            mediaRecorder = new MediaRecorder(stream, { mimeType });
+            audioChunks = [];
+
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    audioChunks.push(event.data);
+                }
+            };
+
+            mediaRecorder.onstop = async () => {
+                console.log("onstop 触发, audioChunks 长度:", audioChunks.length);
+                
+                if (audioChunks.length === 0) {
+                    console.warn("没有收集到音频数据");
+                    alert("录音时间太短，请重试");
+                    return;
+                }
+                
+                const audioBlob = new Blob(audioChunks, { type: mimeType });
+                console.log("音频 Blob 大小:", audioBlob.size, "bytes");
+                
+                await sendAudioToServer(audioBlob);
+                
+                // 停止所有音轨
+                stream.getTracks().forEach(track => track.stop());
+            };
+
+            mediaRecorder.start(100); // 每100ms收集一次数据
+            
             state.isRecording = true;
-            finalTranscript = "";
             els.voiceBtn.classList.add("recording");
             els.voiceStatus.classList.remove("hidden");
             els.voiceStatusText.textContent = "正在录音，请说话...";
-        };
+            console.log("录音开始");
+            
+        } catch (err) {
+            console.error("启动录音失败:", err);
+            alert("启动录音失败，请检查麦克风权限: " + err.message);
+        }
+    }
 
-        recognition.onend = () => {
-            state.isRecording = false;
-            els.voiceBtn.classList.remove("recording");
-            els.voiceStatus.classList.add("hidden");
-            // 如果有内容则自动聚焦输入框
-            if (els.textInput.value.trim()) {
+    function stopRecording() {
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            mediaRecorder.stop();
+            console.log("录音停止");
+        }
+        state.isRecording = false;
+        els.voiceBtn.classList.remove("recording");
+        els.voiceStatus.classList.add("hidden");
+    }
+
+    async function sendAudioToServer(audioBlob) {
+        console.log("sendAudioToServer 被调用");
+        
+        const formData = new FormData();
+        formData.append('audio', audioBlob, 'recording.webm');
+
+        try {
+            els.voiceStatusText.textContent = "正在识别...";
+            console.log("开始发送请求到 /api/speech-to-text");
+            
+            const response = await fetch('/api/speech-to-text', {
+                method: 'POST',
+                body: formData
+            });
+            
+            console.log("收到响应:", response.status);
+
+            const data = await response.json();
+            console.log("响应数据:", data);
+            
+            if (data.error) {
+                console.error("识别错误:", data.error);
+                alert("语音识别失败: " + data.error);
+            } else if (data.text) {
+                els.textInput.value = data.text;
+                autoResizeTextarea();
                 els.textInput.focus();
+                console.log("识别结果:", data.text);
+            } else {
+                console.warn("响应中没有 text 字段");
             }
-        };
-
-        recognition.onerror = (event) => {
-            console.error("语音识别错误:", event.error);
-            state.isRecording = false;
-            els.voiceBtn.classList.remove("recording");
-            els.voiceStatus.classList.add("hidden");
-
-            if (event.error === "not-allowed") {
-                alert("请允许麦克风权限后重试");
-            }
-        };
-
-        state.recognition = recognition;
+        } catch (err) {
+            console.error("发送音频失败:", err);
+            alert("语音识别服务错误: " + err.message);
+        }
     }
 
     function toggleRecording() {
+        console.log("toggleRecording 被调用, state.recognition:", state.recognition, "state.isRecording:", state.isRecording);
+        
         if (!state.recognition) {
             alert("当前浏览器不支持语音识别，请使用Chrome浏览器，或直接输入文字。");
             return;
         }
         if (state.isRecording) {
-            state.recognition.stop();
+            console.log("停止录音...");
+            try {
+                state.recognition.stop();
+            } catch (e) {
+                console.error("停止录音失败:", e);
+                // 强制重置状态
+                state.isRecording = false;
+                els.voiceBtn.classList.remove("recording");
+                els.voiceStatus.classList.add("hidden");
+            }
         } else {
+            console.log("开始录音...");
             els.textInput.value = "";
-            state.recognition.start();
+            try {
+                state.recognition.start();
+            } catch (e) {
+                console.error("启动录音失败:", e);
+                alert("启动录音失败，请检查麦克风权限。错误: " + e.message);
+                // 重置状态
+                state.isRecording = false;
+                els.voiceBtn.classList.remove("recording");
+                els.voiceStatus.classList.add("hidden");
+            }
         }
     }
 
@@ -195,8 +281,17 @@
             const response = await fetch("/api/chat", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ messages }),
+                body: JSON.stringify({ messages, visitor_id: state.visitorId }),
             });
+            
+            // 检查是否触发限制
+            if (response.status === 429) {
+                const errorData = await response.json();
+                removeTypingIndicator();
+                addMessageToDOM("ai", `⚠️ ${errorData.error}`);
+                showLimitReachedModal();
+                return;
+            }
 
             if (!response.ok) {
                 const err = await response.json();
@@ -242,6 +337,9 @@
             // 保存AI消息
             state.messages.push({ role: "assistant", content: fullContent });
             autoSave();
+            
+            // 增加使用次数
+            incrementUsageCount();
 
             // 显示操作按钮
             if (state.messages.length >= 4) {
@@ -471,6 +569,153 @@
         ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
     }
 
+    // ========== 发送图片消息 ==========
+    async function sendImageMessage(file, imageUrl) {
+        // 切换到对话视图
+        els.welcomeView.classList.add('hidden');
+        els.chatView.classList.remove('hidden');
+
+        // 如果是新会话
+        if (!state.sessionId) {
+            state.sessionId = Date.now().toString();
+        }
+
+        // 添加用户消息（显示用）
+        addFileMessage('user', file, imageUrl);
+
+        // 添加消息到状态（多模态格式）
+        state.messages.push({
+            role: "user",
+            content: `我上传了一张图片"${file.name}"，请帮我分析。`,
+            image_url: imageUrl
+        });
+
+        // 清空输入
+        els.textInput.value = "";
+        autoResizeTextarea();
+
+        // 发送到API
+        await sendToAPI(state.messages);
+    }
+
+    // ========== 文件上传 ==========
+    function initFileUpload() {
+        els.fileBtn.addEventListener("click", () => {
+            els.fileInput.click();
+        });
+
+        els.fileInput.addEventListener("change", async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            // 检查文件类型
+            const allowedTypes = [
+                'text/plain', 'text/markdown', 'application/pdf',
+                'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+                'audio/mpeg', 'audio/wav', 'audio/x-m4a', 'audio/webm'
+            ];
+            const allowedExts = ['.txt', '.md', '.pdf', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.mp3', '.wav', '.m4a', '.webm'];
+            
+            const ext = '.' + file.name.split('.').pop().toLowerCase();
+            state.currentFileExt = ext; // 保存扩展供后续使用
+            
+            if (!allowedTypes.includes(file.type) && !allowedExts.includes(ext)) {
+                alert('不支持的文件类型。支持：文本、PDF、图片、音频文件');
+                return;
+            }
+
+            // 检查文件大小 (10MB)
+            if (file.size > 10 * 1024 * 1024) {
+                alert('文件太大，最大支持 10MB');
+                return;
+            }
+
+            await uploadFile(file);
+            els.fileInput.value = ''; // 清空以便重复上传
+        });
+    }
+
+    async function uploadFile(file) {
+        els.fileBtn.classList.add('uploading');
+        els.fileBtn.disabled = true;
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            const response = await fetch('/api/upload', {
+                method: 'POST',
+                body: formData
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.error || '上传失败');
+            }
+
+            // 如果是文本文件，读取内容并发送
+            const fileExt = state.currentFileExt || '';
+            if (file.type === 'text/plain' || file.type === 'text/markdown' || fileExt === '.txt' || fileExt === '.md') {
+                // 切换到对话视图
+                els.welcomeView.classList.add('hidden');
+                els.chatView.classList.remove('hidden');
+                // 添加文件消息到界面
+                addFileMessage('user', file, data.url);
+                const text = await file.text();
+                els.textInput.value = `我上传了一个文件"${file.name}"，内容如下：\n\n${text}`;
+                await sendMessage();
+            } else if (file.type.startsWith('image/')) {
+                // 对于图片，使用 R2 公开 URL 发送
+                await sendImageMessage(file, data.url);
+            } else {
+                // 切换到对话视图
+                els.welcomeView.classList.add('hidden');
+                els.chatView.classList.remove('hidden');
+                // 添加文件消息到界面
+                addFileMessage('user', file, data.url);
+                // 对于音频，发送描述消息
+                els.textInput.value = `我上传了一个音频"${file.name}"，链接：${data.url}\n\n请帮我分析这个音频。`;
+                await sendMessage();
+            }
+
+        } catch (error) {
+            alert('上传失败: ' + error.message);
+        } finally {
+            els.fileBtn.classList.remove('uploading');
+            els.fileBtn.disabled = false;
+        }
+    }
+
+    function addFileMessage(role, file, url) {
+        const div = document.createElement('div');
+        div.className = `message ${role}`;
+
+        const bubble = document.createElement('div');
+        bubble.className = 'message-bubble';
+
+        // 文件图标
+        let icon = '📄';
+        if (file.type.startsWith('image/')) icon = '🖼️';
+        else if (file.type.startsWith('audio/')) icon = '🎵';
+        else if (file.name.endsWith('.pdf')) icon = '📑';
+        else if (file.name.endsWith('.txt') || file.name.endsWith('.md')) icon = '📝';
+
+        let content = `<div>上传了 ${icon} ${file.name}</div>`;
+        
+        // 图片预览
+        if (file.type.startsWith('image/')) {
+            content += `<img src="${url}" class="file-preview" alt="${file.name}">`;
+        } else {
+            content += `<div class="message-file"><span class="file-icon">${icon}</span><span class="file-name">${file.name}</span></div>`;
+        }
+
+        bubble.innerHTML = content;
+        div.appendChild(bubble);
+        els.chatMessages.appendChild(div);
+        scrollToBottom();
+    }
+
     // ========== 事件绑定 ==========
     function bindEvents() {
         els.voiceBtn.addEventListener("click", toggleRecording);
@@ -489,6 +734,103 @@
                 sendMessage();
             }
         });
+
+        initFileUpload();
+    }
+
+    // ========== 访客标识管理 ==========
+    function getOrCreateVisitorId() {
+        let visitorId = localStorage.getItem("visitor_id");
+        if (!visitorId) {
+            // 生成唯一标识: 时间戳 + 随机数 + 浏览器指纹简版
+            const fingerprint = navigator.userAgent.slice(0, 20) + screen.width + screen.height;
+            visitorId = "v_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9) + "_" + btoa(fingerprint).slice(0, 8);
+            localStorage.setItem("visitor_id", visitorId);
+        }
+        state.visitorId = visitorId;
+        return visitorId;
+    }
+
+    async function fetchUsageInfo() {
+        const visitorId = getOrCreateVisitorId();
+        try {
+            const resp = await fetch("/api/usage", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ visitor_id: visitorId })
+            });
+            const data = await resp.json();
+            if (!data.error) {
+                state.usageInfo = data;
+                updateUsageDisplay();
+            }
+        } catch (e) {
+            console.error("获取使用信息失败:", e);
+        }
+    }
+
+    async function incrementUsageCount() {
+        const visitorId = state.visitorId;
+        if (!visitorId) return;
+        
+        try {
+            const resp = await fetch("/api/increment-usage", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ visitor_id: visitorId })
+            });
+            const data = await resp.json();
+            if (!data.error) {
+                state.usageInfo = {
+                    ...state.usageInfo,
+                    used_today: data.count,
+                    remaining: data.remaining
+                };
+                updateUsageDisplay();
+            }
+        } catch (e) {
+            console.error("更新使用次数失败:", e);
+        }
+    }
+
+    function updateUsageDisplay() {
+        if (!state.usageInfo) return;
+        
+        const { remaining, daily_limit } = state.usageInfo;
+        let usageBadge = document.getElementById("usageBadge");
+        
+        if (!usageBadge) {
+            usageBadge = document.createElement("div");
+            usageBadge.id = "usageBadge";
+            usageBadge.className = "usage-badge";
+            document.querySelector(".top-bar").appendChild(usageBadge);
+        }
+        
+        usageBadge.textContent = `今日剩余: ${remaining}/${daily_limit}`;
+        usageBadge.className = "usage-badge" + (remaining <= 3 ? " low" : "");
+        
+        // 如果次数用完，禁用输入
+        if (remaining <= 0) {
+            els.textInput.placeholder = "今日免费次数已用完，请明天再来";
+            els.textInput.disabled = true;
+            els.sendBtn.disabled = true;
+            els.voiceBtn.disabled = true;
+            els.fileBtn.disabled = true;
+        }
+    }
+
+    function showLimitReachedModal() {
+        const modal = document.createElement("div");
+        modal.className = "limit-modal";
+        modal.innerHTML = `
+            <div class="limit-modal-content">
+                <h3>今日次数已用完</h3>
+                <p>您已达到今日免费使用上限（${state.usageInfo?.daily_limit || 10}次）</p>
+                <p class="reset-time">次数将在次日 00:00 重置</p>
+                <button onclick="this.closest('.limit-modal').remove()">我知道了</button>
+            </div>
+        `;
+        document.body.appendChild(modal);
     }
 
     // ========== 初始化 ==========
@@ -496,6 +838,10 @@
         initSpeechRecognition();
         bindEvents();
         renderHistory();
+        
+        // 初始化访客标识并获取使用信息
+        getOrCreateVisitorId();
+        await fetchUsageInfo();
 
         // 检查API配置
         try {

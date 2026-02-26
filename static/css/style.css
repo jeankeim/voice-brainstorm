@@ -491,6 +491,73 @@ html, body {
     display: none !important;
 }
 
+/* 文件上传按钮 */
+.file-btn {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    border: none;
+    background: var(--bg);
+    color: var(--text);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    flex-shrink: 0;
+}
+
+.file-btn:hover {
+    background: var(--border);
+}
+
+.file-btn.uploading {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* 文件消息样式 */
+.message-file {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: rgba(255,255,255,0.2);
+    border-radius: 8px;
+    margin-top: 8px;
+}
+
+.message.user .message-file {
+    background: rgba(255,255,255,0.2);
+}
+
+.message.ai .message-file {
+    background: var(--bg);
+}
+
+.file-icon {
+    font-size: 20px;
+}
+
+.file-name {
+    font-size: 13px;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-preview {
+    max-width: 200px;
+    max-height: 150px;
+    border-radius: 8px;
+    margin-top: 8px;
+}
+
 /* 简易Markdown渲染 */
 .markdown-content h1 { font-size: 18px; font-weight: 700; margin: 16px 0 8px; }
 .markdown-content h2 { font-size: 16px; font-weight: 600; margin: 14px 0 6px; }
@@ -501,11 +568,96 @@ html, body {
 .markdown-content strong { font-weight: 600; }
 .markdown-content em { font-style: italic; }
 
+/* 使用次数徽章 */
+.usage-badge {
+    font-size: 12px;
+    padding: 4px 10px;
+    background: var(--primary-light);
+    color: white;
+    border-radius: 12px;
+    font-weight: 500;
+    margin-left: auto;
+    margin-right: 8px;
+}
+
+.usage-badge.low {
+    background: #ef4444;
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+/* 限制提示弹窗 */
+.limit-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    animation: fadeIn 0.2s ease;
+}
+
+.limit-modal-content {
+    background: var(--surface);
+    padding: 28px 32px;
+    border-radius: var(--radius);
+    text-align: center;
+    max-width: 320px;
+    box-shadow: var(--shadow-lg);
+    animation: slideUp 0.3s ease;
+}
+
+.limit-modal-content h3 {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: var(--text);
+}
+
+.limit-modal-content p {
+    color: var(--text-secondary);
+    font-size: 14px;
+    margin-bottom: 8px;
+}
+
+.limit-modal-content .reset-time {
+    font-size: 13px;
+    color: #ef4444;
+    margin-bottom: 20px;
+}
+
+.limit-modal-content button {
+    background: var(--primary);
+    color: white;
+    border: none;
+    padding: 10px 24px;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.limit-modal-content button:hover {
+    background: var(--primary-dark);
+}
+
+@keyframes slideUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
 /* 响应式 */
 @media (max-width: 600px) {
     .sidebar { width: 80%; }
     .message-bubble { max-width: 88%; }
     .welcome-content h2 { font-size: 20px; }
+    .usage-badge { font-size: 11px; padding: 3px 8px; }
 }
 
 /* 滚动条 */
