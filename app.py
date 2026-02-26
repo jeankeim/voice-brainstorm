@@ -154,7 +154,7 @@ def call_dashscope_stream(messages):
         "messages": messages,
         "stream": True,
         "temperature": 0.8,
-        "max_tokens": 4000,
+        "max_tokens": 8000,
     })  # ensure_ascii=True by default, pure ASCII body
 
     ctx = ssl.create_default_context()
@@ -253,8 +253,15 @@ def chat():
                         print("Received chunk:", obj)  # Debug
                         choices = obj.get("choices", [])
                         if choices:
-                            delta = choices[0].get("delta", {})
+                            choice = choices[0]
+                            delta = choice.get("delta", {})
                             content = delta.get("content", "")
+                            finish_reason = choice.get("finish_reason")
+                            
+                            # 检查生成结束原因
+                            if finish_reason:
+                                print(f"生成结束原因: {finish_reason}")
+                            
                             print("Content:", content)  # Debug
                             if content:
                                 # Use ensure_ascii=True so output is pure ASCII
