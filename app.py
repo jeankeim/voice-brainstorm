@@ -140,7 +140,7 @@ SYSTEM_PROMPT = """你是专业的头脑风暴助手，任务是通过深度提�
 - 可以分析图片并基于图片内容进行头脑风暴
 - 提问有深度，能引发思考
 - 总结全面、结构清晰、有可操作性
-- 每次回复控制在1500字以内，保持简洁有力"""
+- 每次回复控制在4000字以内，尽量保持简洁有力"""
 
 
 def call_dashscope_stream(messages):
@@ -471,10 +471,21 @@ def speech_to_text():
             content_type="application/json"
         )
     
+    temp_input = None
+    temp_wav = None
+    
     try:
         # Read audio data
         audio_data = audio_file.read()
         print(f"收到音频数据: {len(audio_data)} bytes")
+        
+        # Validate audio data
+        if len(audio_data) < 100:
+            return Response(
+                json.dumps({"error": "音频数据太短，请重新录制"}).encode("utf-8"),
+                status=400,
+                content_type="application/json"
+            )
         
         # Save original file
         temp_input = f"/tmp/{uuid.uuid4().hex}_input"
@@ -508,40 +519,42 @@ def speech_to_text():
         import dashscope
         dashscope.api_key = DASHSCOPE_API_KEY
         
-        # Call DashScope ASR
-        recognition = Recognition(
-            model='paraformer-realtime-v2',
-            format='wav',
-            sample_rate=16000,
-            language_hints=['zh', 'en'],
-            callback=None
-        )
-        
-        result = recognition.call(temp_wav)
-        
-        # Clean up temp files
+        # Call DashScope ASR with timeout handling
         try:
-            os.remove(temp_input)
-            os.remove(temp_wav)
-        except:
-            pass
-        
-        if result.status_code == HTTPStatus.OK:
-            sentences = result.get_sentence()
-            text = ""
-            if isinstance(sentences, list):
-                text = "".join([s.get("text", "") for s in sentences])
-            elif isinstance(sentences, dict):
-                text = sentences.get("text", "")
-            
-            print(f"识别结果: {text}")
-            return Response(
-                json.dumps({"text": text}).encode("utf-8"),
-                content_type="application/json"
+            recognition = Recognition(
+                model='paraformer-realtime-v2',
+                format='wav',
+                sample_rate=16000,
+                language_hints=['zh', 'en'],
+                callback=None
             )
-        else:
+            
+            result = recognition.call(temp_wav)
+            
+            if result.status_code == HTTPStatus.OK:
+                sentences = result.get_sentence()
+                text = ""
+                if isinstance(sentences, list):
+                    text = "".join([s.get("text", "") for s in sentences])
+                elif isinstance(sentences, dict):
+                    text = sentences.get("text", "")
+                
+                print(f"识别结果: {text}")
+                return Response(
+                    json.dumps({"text": text}).encode("utf-8"),
+                    content_type="application/json"
+                )
+            else:
+                print(f"ASR API 错误: {result.message}")
+                return Response(
+                    json.dumps({"error": f"语音识别失败: {result.message}"}).encode("utf-8"),
+                    status=500,
+                    content_type="application/json"
+                )
+        except Exception as asr_err:
+            print(f"ASR 调用异常: {asr_err}")
             return Response(
-                json.dumps({"error": f"ASR failed: {result.message}"}).encode("utf-8"),
+                json.dumps({"error": f"语音识别服务异常，请稍后重试"}).encode("utf-8"),
                 status=500,
                 content_type="application/json"
             )
@@ -551,10 +564,19 @@ def speech_to_text():
         print("Speech recognition error:", str(e))
         print(traceback.format_exc())
         return Response(
-            json.dumps({"error": str(e)}).encode("utf-8"),
+            json.dumps({"error": "语音识别处理失败，请重试"}).encode("utf-8"),
             status=500,
             content_type="application/json"
         )
+    finally:
+        # Clean up temp files - always execute
+        for temp_file in [temp_input, temp_wav]:
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                    print(f"清理临时文件: {temp_file}")
+                except Exception as clean_err:
+                    print(f"清理临时文件失败: {clean_err}")
 
 
 def convert_to_wav(audio_data):
