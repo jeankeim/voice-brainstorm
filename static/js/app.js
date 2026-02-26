@@ -379,18 +379,55 @@
         els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
     }
 
-    // ========== API调用 ==========
-    async function sendToAPI(messages) {
+    // ========== API调用（带重试机制） ==========
+    async function sendToAPIWithRetry(messages, maxRetries = 2) {
+        let lastError = null;
+        
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                if (attempt > 0) {
+                    console.log(`第 ${attempt} 次重试...`);
+                    // 显示重试提示
+                    const retryMsg = attempt === 1 ? "连接不稳定，正在重试..." : `正在第 ${attempt} 次重试...`;
+                    addMessageToDOM("ai", retryMsg);
+                    await new Promise(r => setTimeout(r, 1000)); // 等待 1 秒后重试
+                }
+                
+                const result = await sendToAPIInternal(messages);
+                return result;
+            } catch (error) {
+                lastError = error;
+                console.error(`尝试 ${attempt + 1} 失败:`, error);
+                
+                // 如果是限制错误，不重试
+                if (error.message && error.message.includes("次数已用完")) {
+                    throw error;
+                }
+                
+                // 最后一次尝试失败，抛出错误
+                if (attempt === maxRetries) {
+                    throw error;
+                }
+            }
+        }
+    }
+
+    async function sendToAPIInternal(messages) {
         state.isStreaming = true;
         els.sendBtn.disabled = true;
 
         const typingBubble = addTypingIndicator();
         let fullContent = "";
+        let lastChunkTime = Date.now();
+        const CHUNK_TIMEOUT = 30000; // 30 秒无数据视为超时
 
         try {
             const response = await fetch("/api/chat", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: { 
+                    "Content-Type": "application/json",
+                    "Accept": "text/event-stream"
+                },
                 body: JSON.stringify({ messages, visitor_id: state.visitorId }),
             });
             
@@ -416,8 +453,16 @@
             let buffer = "";
 
             while (true) {
+                // 检查超时
+                if (Date.now() - lastChunkTime > CHUNK_TIMEOUT) {
+                    throw new Error("响应超时");
+                }
+
                 const { done, value } = await reader.read();
                 if (done) break;
+
+                // 更新最后接收时间
+                lastChunkTime = Date.now();
 
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split("\n");
@@ -455,12 +500,23 @@
             if (state.messages.length >= 4) {
                 els.actionBar.classList.remove("hidden");
             }
+            
+            return fullContent;
         } catch (error) {
             removeTypingIndicator();
-            addMessageToDOM("ai", `出错了: ${error.message}`);
+            throw error;
         } finally {
             state.isStreaming = false;
             els.sendBtn.disabled = false;
+        }
+    }
+
+    // 对外暴露的 API 调用函数（带重试）
+    async function sendToAPI(messages) {
+        try {
+            return await sendToAPIWithRetry(messages);
+        } catch (error) {
+            addMessageToDOM("ai", `出错了: ${error.message}`);
         }
     }
 

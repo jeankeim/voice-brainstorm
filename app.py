@@ -154,7 +154,7 @@ def call_dashscope_stream(messages):
         "messages": messages,
         "stream": True,
         "temperature": 0.8,
-        "max_tokens": 8000,
+        "max_tokens": 6000,
     })  # ensure_ascii=True by default, pure ASCII body
 
     ctx = ssl.create_default_context()
@@ -292,6 +292,8 @@ def chat():
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+            "Keep-Alive": "timeout=120",
         },
     )
 
