@@ -433,39 +433,52 @@ def init_vector_db():
     
     with get_db() as db:
         cur = db.cursor()
+        
+        # 启用 pgvector 扩展（单独事务）
         try:
-            # 启用 pgvector 扩展
             cur.execute('CREATE EXTENSION IF NOT EXISTS vector')
+            db.commit()
             print("[DB] pgvector 扩展已启用")
         except Exception as e:
             print(f"[DB] 警告: 启用 pgvector 扩展失败: {e}")
+            db.rollback()  # 回滚失败的事务
             # 继续执行，表可能仍然可以创建
         
         # 知识库表
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS knowledge_bases (
-                id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                description TEXT,
-                created_at TIMESTAMP,
-                updated_at TIMESTAMP
-            )
-        ''')
-        print("[DB] knowledge_bases 表已创建或已存在")
+        try:
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS knowledge_bases (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    created_at TIMESTAMP,
+                    updated_at TIMESTAMP
+                )
+            ''')
+            db.commit()
+            print("[DB] knowledge_bases 表已创建或已存在")
+        except Exception as e:
+            print(f"[DB] 警告: 创建 knowledge_bases 表失败: {e}")
+            db.rollback()
         
         # 文档表
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS documents (
-                id TEXT PRIMARY KEY,
-                kb_id TEXT NOT NULL,
-                filename TEXT NOT NULL,
-                content_type TEXT,
-                chunk_count INTEGER DEFAULT 0,
-                created_at TIMESTAMP
-            )
-        ''')
-        print("[DB] documents 表已创建或已存在")
+        try:
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS documents (
+                    id TEXT PRIMARY KEY,
+                    kb_id TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    content_type TEXT,
+                    chunk_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMP
+                )
+            ''')
+            db.commit()
+            print("[DB] documents 表已创建或已存在")
+        except Exception as e:
+            print(f"[DB] 警告: 创建 documents 表失败: {e}")
+            db.rollback()
         
         # 向量表
         try:
@@ -481,7 +494,6 @@ def init_vector_db():
                     created_at TIMESTAMP
                 )
             ''')
-            print("[DB] document_chunks 表已创建或已存在")
             
             # 创建向量索引
             cur.execute('''
@@ -496,11 +508,12 @@ def init_vector_db():
                 CREATE INDEX IF NOT EXISTS idx_document_chunks_session 
                 ON document_chunks(session_id)
             ''')
-            print("[DB] 向量索引已创建")
+            db.commit()
+            print("[DB] 向量表和索引已创建")
         except Exception as e:
             print(f"[DB] 警告: 创建向量表失败: {e}")
+            db.rollback()
         
-        db.commit()
         print("[DB] 向量数据库初始化完成")
 
 
