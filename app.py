@@ -44,6 +44,10 @@ app = Flask(__name__)
 # 初始化数据库
 init_db()
 
+# 初始化向量数据库（PostgreSQL 模式）
+from database import init_vector_db
+init_vector_db()
+
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
 DASHSCOPE_HOST = "dashscope.aliyuncs.com"
 DASHSCOPE_PATH = "/compatible-mode/v1/chat/completions"
