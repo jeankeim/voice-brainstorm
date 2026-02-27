@@ -173,6 +173,8 @@ def get_user_sessions(user_id: str):
                 WHERE user_id = %s
                 ORDER BY updated_at DESC
             ''', (user_id,))
+            rows = cur.fetchall()
+            return list(rows)  # PostgreSQL RealDictCursor 返回的已经是 dict
         else:
             cur.execute('''
                 SELECT id, title, created_at, updated_at
@@ -180,8 +182,8 @@ def get_user_sessions(user_id: str):
                 WHERE user_id = ?
                 ORDER BY updated_at DESC
             ''', (user_id,))
-        rows = cur.fetchall()
-        return [dict(row) for row in rows]
+            rows = cur.fetchall()
+            return [dict(row) for row in rows]
 
 
 def get_session_messages(session_id: str):
@@ -195,6 +197,8 @@ def get_session_messages(session_id: str):
                 WHERE session_id = %s
                 ORDER BY created_at ASC
             ''', (session_id,))
+            rows = cur.fetchall()
+            return list(rows)  # PostgreSQL RealDictCursor 返回的已经是 dict
         else:
             cur.execute('''
                 SELECT role, content, image_url, created_at
@@ -202,8 +206,8 @@ def get_session_messages(session_id: str):
                 WHERE session_id = ?
                 ORDER BY created_at ASC
             ''', (session_id,))
-        rows = cur.fetchall()
-        return [dict(row) for row in rows]
+            rows = cur.fetchall()
+            return [dict(row) for row in rows]
 
 
 def delete_session(session_id: str):
@@ -267,14 +271,16 @@ def get_session(session_id: str):
                 FROM sessions
                 WHERE id = %s
             ''', (session_id,))
+            row = cur.fetchone()
+            return row  # PostgreSQL RealDictCursor 返回的已经是 dict
         else:
             cur.execute('''
                 SELECT id, user_id, title, created_at, updated_at
                 FROM sessions
                 WHERE id = ?
             ''', (session_id,))
-        row = cur.fetchone()
-        return dict(row) if row else None
+            row = cur.fetchone()
+            return dict(row) if row else None
 
 
 # ========== RAG 向量数据库支持 ==========
@@ -441,6 +447,9 @@ def get_user_knowledge_bases(user_id: str):
                     WHERE user_id = %s
                     ORDER BY created_at DESC
                 ''', (user_id,))
+                rows = cur.fetchall()
+                # PostgreSQL RealDictCursor 返回的已经是 dict
+                result = list(rows)
             else:
                 cur.execute('''
                     SELECT id, name, description, created_at
@@ -448,12 +457,14 @@ def get_user_knowledge_bases(user_id: str):
                     WHERE user_id = ?
                     ORDER BY created_at DESC
                 ''', (user_id,))
-            rows = cur.fetchall()
-            result = [dict(row) for row in rows]
+                rows = cur.fetchall()
+                result = [dict(row) for row in rows]
             print(f"[DB] 查询结果: {len(result)} 条记录")
             return result
         except Exception as e:
             print(f"[DB] 查询失败: {e}")
+            import traceback
+            print(traceback.format_exc())
             return []  # 表可能不存在
 
 
@@ -500,6 +511,8 @@ def get_documents(kb_id: str):
                     WHERE kb_id = %s
                     ORDER BY created_at DESC
                 ''', (kb_id,))
+                rows = cur.fetchall()
+                return list(rows)  # PostgreSQL RealDictCursor 返回的已经是 dict
             else:
                 cur.execute('''
                     SELECT id, filename, content_type, chunk_count, created_at
@@ -507,8 +520,8 @@ def get_documents(kb_id: str):
                     WHERE kb_id = ?
                     ORDER BY created_at DESC
                 ''', (kb_id,))
-            rows = cur.fetchall()
-            return [dict(row) for row in rows]
+                rows = cur.fetchall()
+                return [dict(row) for row in rows]
         except:
             return []
 
