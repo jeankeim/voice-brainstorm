@@ -40,67 +40,83 @@ else:
 
 def init_db():
     """初始化数据库表"""
-    with get_db() as db:
-        cur = db.cursor()
-        
-        # 用户表
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id TEXT PRIMARY KEY,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_active TIMESTAMP
-            )
-        ''')
-        
-        # 会话表
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS sessions (
-                id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                title TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-        ''')
-        
-        # 消息表
-        if USE_POSTGRES:
+    print(f"[DB] ========== 开始初始化数据库 ==========")
+    print(f"[DB] USE_POSTGRES={USE_POSTGRES}, DATABASE_URL={DATABASE_URL[:30] if DATABASE_URL else 'None'}...")
+    
+    try:
+        with get_db() as db:
+            cur = db.cursor()
+            
+            # 用户表
+            print("[DB] 创建 users 表...")
             cur.execute('''
-                CREATE TABLE IF NOT EXISTS messages (
-                    id SERIAL PRIMARY KEY,
-                    session_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    image_url TEXT,
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                    last_active TIMESTAMP
                 )
             ''')
-        else:
+            print("[DB] users 表 OK")
+            
+            # 会话表
+            print("[DB] 创建 sessions 表...")
             cur.execute('''
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    image_url TEXT,
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    title TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
                 )
             ''')
-        
-        # 创建索引
-        cur.execute('''
-            CREATE INDEX IF NOT EXISTS idx_sessions_user 
-            ON sessions(user_id, updated_at DESC)
-        ''')
-        cur.execute('''
-            CREATE INDEX IF NOT EXISTS idx_messages_session 
-            ON messages(session_id, created_at)
-        ''')
-        
-        db.commit()
+            print("[DB] sessions 表 OK")
+            
+            # 消息表
+            print("[DB] 创建 messages 表...")
+            if USE_POSTGRES:
+                cur.execute('''
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id SERIAL PRIMARY KEY,
+                        session_id TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        image_url TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                    )
+                ''')
+            else:
+                cur.execute('''
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        image_url TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                    )
+                ''')
+            print("[DB] messages 表 OK")
+            
+            # 创建索引
+            cur.execute('''
+                CREATE INDEX IF NOT EXISTS idx_sessions_user 
+                ON sessions(user_id, updated_at DESC)
+            ''')
+            cur.execute('''
+                CREATE INDEX IF NOT EXISTS idx_messages_session 
+                ON messages(session_id, created_at)
+            ''')
+            
+            db.commit()
+            print("[DB] ========== 数据库初始化完成 ==========")
+    except Exception as e:
+        print(f"[DB] 数据库初始化失败: {e}")
+        import traceback
+        print(traceback.format_exc())
+        raise
 
 
 # ========== 用户操作 ==========
