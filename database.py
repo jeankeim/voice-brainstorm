@@ -174,7 +174,7 @@ def get_user_sessions(user_id: str):
                 ORDER BY updated_at DESC
             ''', (user_id,))
             rows = cur.fetchall()
-            return list(rows)  # PostgreSQL RealDictCursor 返回的已经是 dict
+            return [dict(row) for row in rows]
         else:
             cur.execute('''
                 SELECT id, title, created_at, updated_at
@@ -198,7 +198,7 @@ def get_session_messages(session_id: str):
                 ORDER BY created_at ASC
             ''', (session_id,))
             rows = cur.fetchall()
-            return list(rows)  # PostgreSQL RealDictCursor 返回的已经是 dict
+            return [dict(row) for row in rows]
         else:
             cur.execute('''
                 SELECT role, content, image_url, created_at
@@ -272,7 +272,7 @@ def get_session(session_id: str):
                 WHERE id = %s
             ''', (session_id,))
             row = cur.fetchone()
-            return row  # PostgreSQL RealDictCursor 返回的已经是 dict
+            return dict(row) if row else None
         else:
             cur.execute('''
                 SELECT id, user_id, title, created_at, updated_at
@@ -448,8 +448,8 @@ def get_user_knowledge_bases(user_id: str):
                     ORDER BY created_at DESC
                 ''', (user_id,))
                 rows = cur.fetchall()
-                # PostgreSQL RealDictCursor 返回的已经是 dict
-                result = list(rows)
+                # RealDictRow 需要显式转换为 dict
+                result = [dict(row) for row in rows]
             else:
                 cur.execute('''
                     SELECT id, name, description, created_at
@@ -512,7 +512,7 @@ def get_documents(kb_id: str):
                     ORDER BY created_at DESC
                 ''', (kb_id,))
                 rows = cur.fetchall()
-                return list(rows)  # PostgreSQL RealDictCursor 返回的已经是 dict
+                return [dict(row) for row in rows]
             else:
                 cur.execute('''
                     SELECT id, filename, content_type, chunk_count, created_at
