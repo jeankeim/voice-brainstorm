@@ -5,8 +5,26 @@
 import logging
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
+
+# 设置东八区时区（北京时间）
+try:
+    from zoneinfo import ZoneInfo
+    TZ_BEIJING = ZoneInfo("Asia/Shanghai")
+except ImportError:
+    try:
+        import pytz
+        TZ_BEIJING = pytz.timezone("Asia/Shanghai")
+    except ImportError:
+        TZ_BEIJING = None
+
+def get_beijing_time():
+    """获取北京时间"""
+    if TZ_BEIJING:
+        return datetime.now(TZ_BEIJING)
+    else:
+        return datetime.utcnow() + timedelta(hours=8)
 
 # 日志级别
 DEBUG = logging.DEBUG
@@ -21,7 +39,7 @@ class StructuredFormatter(logging.Formatter):
     
     def format(self, record: logging.LogRecord) -> str:
         log_data = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": get_beijing_time().isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -42,7 +60,7 @@ class SimpleFormatter(logging.Formatter):
     """简单日志格式器，适合开发环境"""
     
     def format(self, record: logging.LogRecord) -> str:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = get_beijing_time().strftime("%Y-%m-%d %H:%M:%S")
         return f"[{timestamp}] [{record.levelname}] {record.getMessage()}"
 
 
