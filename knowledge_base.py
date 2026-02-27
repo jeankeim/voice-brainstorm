@@ -8,6 +8,27 @@ import json
 from typing import List, Dict, Optional
 from datetime import datetime
 
+# 导入北京时间工具
+try:
+    from database import get_beijing_time
+except ImportError:
+    # 如果 database 模块不可用，定义本地版本
+    try:
+        from zoneinfo import ZoneInfo
+        TZ_BEIJING = ZoneInfo("Asia/Shanghai")
+        def get_beijing_time():
+            return datetime.now(TZ_BEIJING)
+    except ImportError:
+        try:
+            import pytz
+            TZ_BEIJING = pytz.timezone("Asia/Shanghai")
+            def get_beijing_time():
+                return datetime.now(TZ_BEIJING)
+        except ImportError:
+            from datetime import timedelta
+            def get_beijing_time():
+                return datetime.utcnow() + timedelta(hours=8)
+
 # 数据库配置
 DATABASE_URL = os.getenv("DATABASE_URL")
 USE_POSTGRES = DATABASE_URL and DATABASE_URL.startswith("postgresql")
@@ -135,9 +156,10 @@ def add_chunks_to_chroma(kb_id: str, doc_id: str, chunks: List[Dict], embeddings
     if collection is None:
         return
     
+    beijing_time = get_beijing_time().isoformat()
     ids = [f"{doc_id}_{i}" for i in range(len(chunks))]
     texts = [c["text"] for c in chunks]
-    metadatas = [{**c["metadata"], "doc_id": doc_id} for c in chunks]
+    metadatas = [{**c["metadata"], "doc_id": doc_id, "created_at": beijing_time} for c in chunks]
     
     collection.add(
         ids=ids,

@@ -7,10 +7,23 @@ import io
 import wave
 from datetime import datetime
 from flask import Flask, render_template, request, Response, stream_with_context, jsonify
-from dotenv import load_dotenv
 import boto3
 from botocore.config import Config
 from http import HTTPStatus
+
+# 导入集中配置
+from config import (
+    DASHSCOPE_API_KEY, DASHSCOPE_HOST, DASHSCOPE_CHAT_PATH,
+    MODEL_TEXT, MODEL_VISION, MAX_TOKENS,
+    R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME,
+    R2_PUBLIC_URL, check_r2_configured, get_r2_endpoint,
+    DAILY_LIMIT, MAX_FILE_SIZE, is_allowed_file,
+    HTTP_TIMEOUT_CHAT, HTTP_TIMEOUT_GENERAL,
+    SYSTEM_PROMPT
+)
+
+# 导入结构化日志
+from logger import log_info, log_debug, log_warning, log_error, log_api_request, log_rag_search
 
 # DashScope imports
 try:
@@ -37,24 +50,41 @@ from knowledge_base import (
 )
 from retrieval import search_knowledge_bases, search_history_sessions
 
-load_dotenv()
-
 app = Flask(__name__)
 
 # 初始化数据库
 init_db()
 
+# 初始化连接池（PostgreSQL 模式）
+from database import USE_POSTGRES
+if USE_POSTGRES:
+    from database import init_connection_pool
+    init_connection_pool(min_conn=2, max_conn=20)
+
 # 初始化向量数据库（PostgreSQL 模式）
 from database import init_vector_db
 init_vector_db()
 
-DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
-DASHSCOPE_HOST = "dashscope.aliyuncs.com"
-DASHSCOPE_PATH = "/compatible-mode/v1/chat/completions"
 
-# 模型配置：根据场景自动选择
-MODEL_TEXT = "qwen-plus"           # 纯文本对话
-MODEL_VISION = "qwen-vl-plus"      # 图片分析
+# 应用关闭时清理资源
+@app.teardown_appcontext
+def close_db(error):
+    """应用上下文结束时无需关闭连接（连接池管理）"""
+    pass
+
+
+import atexit
+
+def cleanup_resources():
+    """应用退出时关闭连接池"""
+    if USE_POSTGRES:
+        from database import close_pool
+        close_pool()
+    else:
+        from database import close_sqlite
+        close_sqlite()
+
+atexit.register(cleanup_resources)
 
 def select_model(messages):
     """根据消息内容选择合适模型。
@@ -87,18 +117,14 @@ def select_model(messages):
     print(f"[模型选择] 最后消息无图片，使用 {MODEL_TEXT}")
     return MODEL_TEXT
 
-# Cloudflare R2 Configuration
-R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID")
-R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
-R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
-R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
+# R2 配置已从 config.py 导入
 
 def get_r2_client():
     """Initialize R2 S3-compatible client."""
-    if not all([R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY]):
+    if not check_r2_configured():
         return None
     
-    endpoint_url = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+    endpoint_url = get_r2_endpoint()
     return boto3.client(
         "s3",
         endpoint_url=endpoint_url,
@@ -127,61 +153,12 @@ def upload_to_r2(file_data, filename, content_type):
         )
         
         # Return public URL using R2.dev domain
-        public_url = f"https://pub-58d4a928ab314f6ebcf07239d9efe2a1.r2.dev/{unique_name}"
+        public_url = f"{R2_PUBLIC_URL}/{unique_name}"
         return public_url, None
     except Exception as e:
         return None, str(e)
 
-SYSTEM_PROMPT = """你是专业的头脑风暴助手，任务是通过深度提问帮助用户完善想法。
-
-重要能力说明：
-- 你具备多模态能力，可以直接分析用户上传的图片内容
-- 你可以识别图片中的场景、人物、文字、图表、产品等所有可见元素
-- 当用户上传图片时，你必须先详细分析图片内容，再基于分析进行头脑风暴引导
-- 不要说自己无法查看图片，你确实可以分析图片
-
-工作流程：
-1. 用户分享想法或上传图片后，先理解其核心内容，然后提出第一个深入问题引导进一步思考。
-2. 如果用户上传了图片，先分析图片内容，再基于图片进行头脑风暴提问。
-3. 每次只提一个问题，等用户回答后再继续；问题要具体、有启发性。
-4. 问题维度包括：核心动机、目标受众、价值主张、可行性、潜在挑战、差异化优势、实施路径等。
-5. 3-5轮问答后，主动告知用户'已收集足够信息，现在为你整理完整总结'，然后生成结构化总结。
-6. 用户随时说'总结'、'整理'、'输出'等，立即生成总结。
-
-总结文档格式（Markdown）：
-
-# 想法总结
-
-## 核心想法
-[1-2句话概括]
-
-## 目标与愿景
-[清晰的目标]
-
-## 目标用户/受众
-[用户画像]
-
-## 核心价值
-[独特价值]
-
-## 实施路径
-[行动计划]
-
-## 潜在挑战与应对
-[问题及解决方案]
-
-## 下一步行动
-[3-5个可执行项]
-
-注意事项：
-- 用中文交流
-- 语气亲和专业，像有经验的创业顾问
-- 可以分析图片并基于图片内容进行头脑风暴
-- 提问有深度，能引发思考
-- 总结全面、结构清晰、有可操作性
-- 【重要】每次回复必须控制在2000字以内，优先保证核心内容的完整性
-- 如内容过多，请精简次要信息，确保在限制内完成回复
-- 避免冗长铺垫，直接切入重点"""
+# SYSTEM_PROMPT 已从 config.py 导入
 
 
 def call_dashscope_stream(messages):
@@ -195,18 +172,18 @@ def call_dashscope_stream(messages):
         "messages": messages,
         "stream": True,
         "temperature": 0.8,
-        "max_tokens": 6000,
+        "max_tokens": MAX_TOKENS,
     })  # ensure_ascii=True by default, pure ASCII body
 
     ctx = ssl.create_default_context()
-    conn = http.client.HTTPSConnection(DASHSCOPE_HOST, context=ctx)
+    conn = http.client.HTTPSConnection(DASHSCOPE_HOST, context=ctx, timeout=HTTP_TIMEOUT_CHAT)
 
     headers = {
         "Authorization": "Bearer " + DASHSCOPE_API_KEY,
         "Content-Type": "application/json",
     }
 
-    conn.request("POST", DASHSCOPE_PATH, body=payload.encode("utf-8"), headers=headers)
+    conn.request("POST", DASHSCOPE_CHAT_PATH, body=payload.encode("utf-8"), headers=headers)
     resp = conn.getresponse()
 
     if resp.status != 200:
@@ -232,7 +209,7 @@ def chat():
     use_rag = data.get("use_rag", False)  # 是否启用 RAG
     
     # 调试日志
-    print(f"[RAG] 接收参数: use_rag={use_rag}, kb_ids={kb_ids}, visitor_id={visitor_id}")
+    log_info(f"[RAG] 接收参数: use_rag={use_rag}, kb_ids={kb_ids}, visitor_id={visitor_id}")
     
     # 检查使用限制
     allowed, error_msg = check_visitor_limit(visitor_id)
@@ -268,6 +245,7 @@ def chat():
     # RAG 检索增强
     rag_context = ""
     if use_rag and messages:
+        log_api_request("/api/chat", method="POST", use_rag=True, kb_ids=kb_ids)
         last_user_msg = None
         for msg in reversed(messages):
             if msg.get("role") == "user":
@@ -276,19 +254,19 @@ def chat():
         
         if last_user_msg:
             try:
-                print(f"[RAG] 开始检索: {last_user_msg[:50]}...")
+                log_rag_search(last_user_msg, kb_ids, 0)
                 
                 # 知识库检索
                 kb_results = []
                 if kb_ids:
                     kb_results = search_knowledge_bases(kb_ids, last_user_msg, top_k=5)
-                    print(f"[RAG] 知识库检索结果: {len(kb_results)} 条")
+                    log_info(f"[RAG] 知识库检索结果: {len(kb_results)} 条", type="rag_results", source="knowledge_base", count=len(kb_results))
                 
                 # 历史会话检索
                 history_results = []
                 if visitor_id:
                     history_results = search_history_sessions(visitor_id, last_user_msg, top_k=3)
-                    print(f"[RAG] 历史会话检索结果: {len(history_results)} 条")
+                    log_info(f"[RAG] 历史会话检索结果: {len(history_results)} 条", type="rag_results", source="history", count=len(history_results))
                 
                 # 构建上下文
                 context_parts = []
@@ -361,7 +339,8 @@ def chat():
 
             buf = b""
             while True:
-                chunk = resp.read(4096)
+                # 使用更小的缓冲区 (512字节) 以获得更平滑的流式效果
+                chunk = resp.read(512)
                 if not chunk:
                     break
                 buf += chunk
@@ -380,14 +359,13 @@ def chat():
                                     role="assistant",
                                     content=full_ai_content
                                 )
-                                print(f"[数据库] 保存 AI 回复到会话 {session_id}")
+                                log_info(f"[数据库] 保存 AI 回复到会话 {session_id}", type="db_save")
                             except Exception as e:
-                                print(f"[数据库] 保存 AI 回复失败: {e}")
+                                log_error(f"[数据库] 保存 AI 回复失败: {e}", type="db_save_error")
                         yield b"data: [DONE]\n\n"
                         break
                     try:
                         obj = json.loads(data_str)
-                        print("Received chunk:", obj)  # Debug
                         choices = obj.get("choices", [])
                         if choices:
                             choice = choices[0]
@@ -397,17 +375,18 @@ def chat():
                             
                             # 检查生成结束原因
                             if finish_reason:
-                                print(f"生成结束原因: {finish_reason}")
+                                log_debug(f"生成结束原因: {finish_reason}", type="stream_finish")
                             
-                            print("Content:", content)  # Debug
                             if content:
                                 full_ai_content += content  # 收集内容
                                 # Use ensure_ascii=True so output is pure ASCII
                                 out = "data: " + json.dumps({"content": content}) + "\n\n"
-                                print("Yielding:", out)  # Debug
                                 yield out.encode("ascii")
+                                # 强制刷新缓冲区，确保即时发送
+                                import sys
+                                sys.stdout.flush()
                     except (json.JSONDecodeError, KeyError, IndexError) as e:
-                        print("Parse error:", e, "data:", data_str[:100])  # Debug
+                        log_debug(f"Parse error: {e}", type="parse_error", data=data_str[:100])
                         continue
 
         except Exception as e:
@@ -481,7 +460,7 @@ def get_visitor_remaining(visitor_id):
 @app.route("/api/check", methods=["GET"])
 def check():
     configured = bool(DASHSCOPE_API_KEY)
-    r2_configured = bool(R2_ACCOUNT_ID and R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY and R2_BUCKET_NAME)
+    r2_configured = check_r2_configured()
     return Response(
         json.dumps({
             "configured": configured,
@@ -634,8 +613,36 @@ def upload_file():
             content_type="application/json"
         )
     
+    # 检查文件扩展名
+    if not is_allowed_file(file.filename):
+        return Response(
+            json.dumps({"error": f"不支持的文件类型。允许的类型: {', '.join(ALLOWED_EXTENSIONS)}"}).encode("utf-8"),
+            status=400,
+            content_type="application/json"
+        )
+    
     # Read file data
     file_data = file.read()
+    original_size = len(file_data)
+    
+    # 检查是否为图片，如果是则压缩
+    is_image = file.content_type and file.content_type.startswith('image/')
+    if is_image:
+        file_data = compress_image(file_data, file.filename)
+        compressed_size = len(file_data)
+        if original_size != compressed_size:
+            log_info(f"图片压缩: {original_size} -> {compressed_size} bytes", 
+                    type="image_compress", original_size=original_size, compressed_size=compressed_size)
+    
+    # 检查文件大小
+    if len(file_data) > MAX_FILE_SIZE:
+        max_size_mb = MAX_FILE_SIZE / (1024 * 1024)
+        return Response(
+            json.dumps({"error": f"文件大小超过限制（最大 {max_size_mb:.1f}MB）"}).encode("utf-8"),
+            status=413,
+            content_type="application/json"
+        )
+    
     content_type = file.content_type or "application/octet-stream"
     
     # Upload to R2
@@ -833,6 +840,70 @@ def convert_to_wav(audio_data):
     return wav_buffer.getvalue()
 
 
+def compress_image(image_data: bytes, filename: str, max_size: int = 1920, quality: int = 85) -> bytes:
+    """
+    压缩图片
+    
+    Args:
+        image_data: 原始图片数据
+        filename: 文件名（用于判断格式）
+        max_size: 最大边长（像素）
+        quality: JPEG 压缩质量（1-95）
+    
+    Returns:
+        压缩后的图片数据
+    """
+    try:
+        from PIL import Image
+        import io
+        
+        # 从 bytes 加载图片
+        img = Image.open(io.BytesIO(image_data))
+        
+        # 转换为 RGB（处理 PNG 透明通道等）
+        if img.mode in ('RGBA', 'P'):
+            img = img.convert('RGB')
+        
+        # 检查是否需要缩放
+        width, height = img.size
+        if width > max_size or height > max_size:
+            # 计算缩放比例
+            ratio = min(max_size / width, max_size / height)
+            new_width = int(width * ratio)
+            new_height = int(height * ratio)
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        
+        # 保存到内存
+        output = io.BytesIO()
+        
+        # 根据原格式选择保存格式
+        ext = filename.lower().split('.')[-1] if '.' in filename else 'jpg'
+        if ext in ['png']:
+            # PNG 使用优化
+            img.save(output, format='PNG', optimize=True)
+        elif ext in ['webp']:
+            # WebP 格式
+            img.save(output, format='WEBP', quality=quality, method=6)
+        else:
+            # 默认 JPEG
+            img.save(output, format='JPEG', quality=quality, optimize=True)
+        
+        compressed_data = output.getvalue()
+        
+        # 如果压缩后反而更大，返回原图
+        if len(compressed_data) >= len(image_data):
+            return image_data
+        
+        return compressed_data
+        
+    except ImportError:
+        log_warning("PIL 未安装，跳过图片压缩", type="image_compress_skip")
+        return image_data
+    except Exception as e:
+        log_error(f"图片压缩失败: {e}", type="image_compress_error")
+        return image_data
+
+
 # ========== 会话管理 API ==========
 
 @app.route("/api/sessions", methods=["POST"])
@@ -1002,7 +1073,19 @@ def upload_document(kb_id):
     if file.filename == '':
         return jsonify({'error': 'Empty filename'}), 400
     
+    # 检查文件扩展名
+    if not is_allowed_file(file.filename):
+        return jsonify({'error': f"不支持的文件类型。允许的类型: {', '.join(ALLOWED_EXTENSIONS)}"}), 400
+    
     try:
+        # 保存临时文件前先检查大小
+        file_data = file.read()
+        if len(file_data) > MAX_FILE_SIZE:
+            max_size_mb = MAX_FILE_SIZE / (1024 * 1024)
+            return jsonify({'error': f"文件大小超过限制（最大 {max_size_mb:.1f}MB）"}), 413
+        
+        # 重置文件指针
+        file.seek(0)
         # 保存临时文件
         import tempfile
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:

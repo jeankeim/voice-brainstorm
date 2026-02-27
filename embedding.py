@@ -1,19 +1,16 @@
 """
 文本嵌入服务 - 使用 DashScope text-embedding-v2
 """
-import os
 import json
 import http.client
 import ssl
 from typing import List, Union
 
-# 加载环境变量
-from dotenv import load_dotenv
-load_dotenv()
-
-DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
-DASHSCOPE_HOST = "dashscope.aliyuncs.com"
-EMBEDDING_MODEL = "text-embedding-v2"
+from config import (
+    DASHSCOPE_API_KEY, DASHSCOPE_HOST, 
+    DASHSCOPE_EMBEDDING_PATH, EMBEDDING_MODEL,
+    HTTP_TIMEOUT_EMBEDDING
+)
 
 
 def get_embeddings(texts: Union[str, List[str]], max_retries: int = 2) -> List[List[float]]:
@@ -43,7 +40,11 @@ def get_embeddings(texts: Union[str, List[str]], max_retries: int = 2) -> List[L
             })
             
             ctx = ssl.create_default_context()
-            conn = http.client.HTTPSConnection(DASHSCOPE_HOST, context=ctx)
+            conn = http.client.HTTPSConnection(
+                DASHSCOPE_HOST, 
+                context=ctx, 
+                timeout=HTTP_TIMEOUT_EMBEDDING
+            )
             
             headers = {
                 "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
@@ -52,7 +53,7 @@ def get_embeddings(texts: Union[str, List[str]], max_retries: int = 2) -> List[L
             
             conn.request(
                 "POST",
-                "/api/v1/services/embeddings/text-embedding/text-embedding",
+                DASHSCOPE_EMBEDDING_PATH,
                 body=payload.encode("utf-8"),
                 headers=headers
             )
@@ -85,9 +86,6 @@ def get_embedding(text: str) -> List[float]:
 
 # 简单测试
 if __name__ == "__main__":
-    import os
-    from dotenv import load_dotenv
-    load_dotenv()
     
     test_texts = ["Hello world", "你好世界"]
     try:

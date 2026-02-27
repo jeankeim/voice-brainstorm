@@ -490,7 +490,9 @@
                         if (parsed.error) throw new Error(parsed.error);
                         if (parsed.content) {
                             fullContent += parsed.content;
-                            aiBubble.innerHTML = renderMarkdown(fullContent);
+                            // 使用打字机效果：逐字显示，更平滑
+                            const textElement = aiBubble.querySelector('.message-text') || aiBubble;
+                            textElement.innerHTML = renderMarkdown(fullContent);
                             scrollToBottom();
                         }
                     } catch (e) {

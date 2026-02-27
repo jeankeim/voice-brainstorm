@@ -1,41 +1,129 @@
 """
 数据库模块 - 会话持久化
 支持 PostgreSQL (生产环境) 和 SQLite (本地开发)
+使用连接池优化性能
 """
 import os
 from datetime import datetime
 from contextlib import contextmanager
 
+# 设置东八区时区（北京时间）
+try:
+    from zoneinfo import ZoneInfo
+    TZ_BEIJING = ZoneInfo("Asia/Shanghai")
+except ImportError:
+    # Python < 3.9 使用 pytz
+    try:
+        import pytz
+        TZ_BEIJING = pytz.timezone("Asia/Shanghai")
+    except ImportError:
+        TZ_BEIJING = None
+
+def get_beijing_time():
+    """获取北京时间"""
+    if TZ_BEIJING:
+        return datetime.now(TZ_BEIJING)
+    else:
+        # 回退到 UTC+8 计算
+        from datetime import timedelta
+        return datetime.utcnow() + timedelta(hours=8)
+
 # 判断使用哪种数据库
 DATABASE_URL = os.getenv("DATABASE_URL")
 USE_POSTGRES = DATABASE_URL and DATABASE_URL.startswith("postgresql")
 
+# ========== 连接池配置 ==========
+# PostgreSQL 连接池
+_pg_pool = None
+
+# SQLite 连接（单连接复用）
+_sqlite_conn = None
+
 if USE_POSTGRES:
     import psycopg2
+    from psycopg2 import pool
     from psycopg2.extras import RealDictCursor
     
+    def init_connection_pool(min_conn=1, max_conn=10):
+        """初始化 PostgreSQL 连接池"""
+        global _pg_pool
+        if _pg_pool is None:
+            try:
+                _pg_pool = pool.ThreadedConnectionPool(
+                    min_conn,
+                    max_conn,
+                    DATABASE_URL,
+                    cursor_factory=RealDictCursor
+                )
+                print(f"[DB] PostgreSQL 连接池初始化成功 (min={min_conn}, max={max_conn})")
+            except Exception as e:
+                print(f"[DB] 连接池初始化失败: {e}")
+                raise
+        return _pg_pool
+    
+    def get_pool():
+        """获取连接池"""
+        global _pg_pool
+        if _pg_pool is None:
+            _pg_pool = init_connection_pool()
+        return _pg_pool
+    
     @contextmanager
     def get_db():
-        """PostgreSQL 连接上下文管理器"""
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        """PostgreSQL 连接上下文管理器（使用连接池）"""
+        pg_pool = get_pool()
+        conn = None
         try:
+            conn = pg_pool.getconn()
             yield conn
         finally:
-            conn.close()
+            if conn:
+                pg_pool.putconn(conn)
+    
+    def close_pool():
+        """关闭连接池"""
+        global _pg_pool
+        if _pg_pool:
+            _pg_pool.closeall()
+            _pg_pool = None
+            print("[DB] PostgreSQL 连接池已关闭")
+
 else:
     import sqlite3
+    from threading import Lock
     
     DB_PATH = os.getenv("DB_PATH", "brainstorm.db")
+    _sqlite_lock = Lock()
+    
+    def init_sqlite_connection():
+        """初始化 SQLite 连接（单连接复用）"""
+        global _sqlite_conn
+        if _sqlite_conn is None:
+            _sqlite_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+            _sqlite_conn.row_factory = sqlite3.Row
+            print(f"[DB] SQLite 连接初始化成功: {DB_PATH}")
+        return _sqlite_conn
     
     @contextmanager
     def get_db():
-        """SQLite 连接上下文管理器"""
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-        finally:
-            conn.close()
+        """SQLite 连接上下文管理器（单连接 + 线程锁）"""
+        global _sqlite_conn
+        if _sqlite_conn is None:
+            _sqlite_conn = init_sqlite_connection()
+        
+        with _sqlite_lock:
+            try:
+                yield _sqlite_conn
+            finally:
+                pass  # 不关闭连接，保持复用
+    
+    def close_sqlite():
+        """关闭 SQLite 连接"""
+        global _sqlite_conn
+        if _sqlite_conn:
+            _sqlite_conn.close()
+            _sqlite_conn = None
+            print("[DB] SQLite 连接已关闭")
 
 
 def init_db():
@@ -52,7 +140,7 @@ def init_db():
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     id TEXT PRIMARY KEY,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP,
                     last_active TIMESTAMP
                 )
             ''')
@@ -65,8 +153,8 @@ def init_db():
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
                     title TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP,
+                    updated_at TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users(id)
                 )
             ''')
@@ -82,7 +170,7 @@ def init_db():
                         role TEXT NOT NULL,
                         content TEXT NOT NULL,
                         image_url TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        created_at TIMESTAMP,
                         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
                     )
                 ''')
@@ -94,7 +182,7 @@ def init_db():
                         role TEXT NOT NULL,
                         content TEXT NOT NULL,
                         image_url TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        created_at TIMESTAMP,
                         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
                     )
                 ''')
@@ -125,18 +213,19 @@ def get_or_create_user(user_id: str):
     """获取或创建用户，更新最后活跃时间"""
     with get_db() as db:
         cur = db.cursor()
+        beijing_time = get_beijing_time()
         if USE_POSTGRES:
             cur.execute('''
-                INSERT INTO users (id, last_active) 
-                VALUES (%s, %s)
+                INSERT INTO users (id, created_at, last_active) 
+                VALUES (%s, %s, %s)
                 ON CONFLICT(id) DO UPDATE SET last_active = %s
-            ''', (user_id, datetime.now(), datetime.now()))
+            ''', (user_id, beijing_time, beijing_time, beijing_time))
         else:
             cur.execute('''
-                INSERT INTO users (id, last_active) 
-                VALUES (?, ?)
+                INSERT INTO users (id, created_at, last_active) 
+                VALUES (?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET last_active = ?
-            ''', (user_id, datetime.now(), datetime.now()))
+            ''', (user_id, beijing_time, beijing_time, beijing_time))
         db.commit()
         return user_id
 
@@ -145,19 +234,20 @@ def get_or_create_user(user_id: str):
 
 def create_session(user_id: str, title: str = None) -> str:
     """创建新会话"""
-    session_id = f"sess_{datetime.now().strftime('%Y%m%d%H%M%S')}_{os.urandom(4).hex()}"
+    session_id = f"sess_{get_beijing_time().strftime('%Y%m%d%H%M%S')}_{os.urandom(4).hex()}"
+    beijing_time = get_beijing_time()
     with get_db() as db:
         cur = db.cursor()
         if USE_POSTGRES:
             cur.execute('''
-                INSERT INTO sessions (id, user_id, title)
-                VALUES (%s, %s, %s)
-            ''', (session_id, user_id, title))
+                INSERT INTO sessions (id, user_id, title, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s)
+            ''', (session_id, user_id, title, beijing_time, beijing_time))
         else:
             cur.execute('''
-                INSERT INTO sessions (id, user_id, title)
-                VALUES (?, ?, ?)
-            ''', (session_id, user_id, title))
+                INSERT INTO sessions (id, user_id, title, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (session_id, user_id, title, beijing_time, beijing_time))
         db.commit()
     return session_id
 
@@ -228,11 +318,11 @@ def update_session_title(session_id: str, title: str):
         if USE_POSTGRES:
             cur.execute('''
                 UPDATE sessions SET title = %s, updated_at = %s WHERE id = %s
-            ''', (title, datetime.now(), session_id))
+            ''', (title, get_beijing_time(), session_id))
         else:
             cur.execute('''
                 UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?
-            ''', (title, datetime.now(), session_id))
+            ''', (title, get_beijing_time(), session_id))
         db.commit()
 
 
@@ -240,24 +330,25 @@ def update_session_title(session_id: str, title: str):
 
 def add_message(session_id: str, role: str, content: str, image_url: str = None):
     """添加消息到会话"""
+    beijing_time = get_beijing_time()
     with get_db() as db:
         cur = db.cursor()
         if USE_POSTGRES:
             cur.execute('''
-                INSERT INTO messages (session_id, role, content, image_url)
-                VALUES (%s, %s, %s, %s)
-            ''', (session_id, role, content, image_url))
+                INSERT INTO messages (session_id, role, content, image_url, created_at)
+                VALUES (%s, %s, %s, %s, %s)
+            ''', (session_id, role, content, image_url, beijing_time))
             cur.execute('''
                 UPDATE sessions SET updated_at = %s WHERE id = %s
-            ''', (datetime.now(), session_id))
+            ''', (beijing_time, session_id))
         else:
             cur.execute('''
-                INSERT INTO messages (session_id, role, content, image_url)
-                VALUES (?, ?, ?, ?)
-            ''', (session_id, role, content, image_url))
+                INSERT INTO messages (session_id, role, content, image_url, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (session_id, role, content, image_url, beijing_time))
             cur.execute('''
                 UPDATE sessions SET updated_at = ? WHERE id = ?
-            ''', (datetime.now(), session_id))
+            ''', (beijing_time, session_id))
         db.commit()
 
 
@@ -310,7 +401,8 @@ def init_vector_db():
                 user_id TEXT NOT NULL,
                 name TEXT NOT NULL,
                 description TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
             )
         ''')
         print("[DB] knowledge_bases 表已创建或已存在")
@@ -323,7 +415,7 @@ def init_vector_db():
                 filename TEXT NOT NULL,
                 content_type TEXT,
                 chunk_count INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP
             )
         ''')
         print("[DB] documents 表已创建或已存在")
@@ -339,7 +431,7 @@ def init_vector_db():
                     content TEXT NOT NULL,
                     embedding vector(1536),
                     metadata JSONB,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP
                 )
             ''')
             print("[DB] document_chunks 表已创建或已存在")
@@ -383,7 +475,8 @@ def create_knowledge_base(user_id: str, name: str, description: str = None) -> s
                     user_id TEXT NOT NULL,
                     name TEXT NOT NULL,
                     description TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP,
+                    updated_at TIMESTAMP
                 )
             ''')
             cur.execute('''
@@ -393,14 +486,15 @@ def create_knowledge_base(user_id: str, name: str, description: str = None) -> s
                     filename TEXT NOT NULL,
                     content_type TEXT,
                     chunk_count INTEGER DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP
                 )
             ''')
             
+            beijing_time = get_beijing_time()
             cur.execute('''
-                INSERT INTO knowledge_bases (id, user_id, name, description)
-                VALUES (%s, %s, %s, %s)
-            ''', (kb_id, user_id, name, description))
+                INSERT INTO knowledge_bases (id, user_id, name, description, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            ''', (kb_id, user_id, name, description, beijing_time, beijing_time))
         else:
             # SQLite 不支持向量，但支持基础表结构
             print("[DB] SQLite 模式: 检查并创建表")
@@ -410,7 +504,8 @@ def create_knowledge_base(user_id: str, name: str, description: str = None) -> s
                     user_id TEXT NOT NULL,
                     name TEXT NOT NULL,
                     description TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP,
+                    updated_at TIMESTAMP
                 )
             ''')
             cur.execute('''
@@ -420,13 +515,14 @@ def create_knowledge_base(user_id: str, name: str, description: str = None) -> s
                     filename TEXT NOT NULL,
                     content_type TEXT,
                     chunk_count INTEGER DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP
                 )
             ''')
+            beijing_time = get_beijing_time()
             cur.execute('''
-                INSERT INTO knowledge_bases (id, user_id, name, description)
-                VALUES (?, ?, ?, ?)
-            ''', (kb_id, user_id, name, description))
+                INSERT INTO knowledge_bases (id, user_id, name, description, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (kb_id, user_id, name, description, beijing_time, beijing_time))
             print(f"[DB] SQLite 插入成功")
         db.commit()
         print(f"[DB] 事务提交成功")
@@ -484,18 +580,19 @@ def delete_knowledge_base(kb_id: str, user_id: str):
 
 def add_document(kb_id: str, doc_id: str, filename: str, content_type: str, chunk_count: int = 0):
     """添加文档记录"""
+    beijing_time = get_beijing_time()
     with get_db() as db:
         cur = db.cursor()
         if USE_POSTGRES:
             cur.execute('''
-                INSERT INTO documents (id, kb_id, filename, content_type, chunk_count)
-                VALUES (%s, %s, %s, %s, %s)
-            ''', (doc_id, kb_id, filename, content_type, chunk_count))
+                INSERT INTO documents (id, kb_id, filename, content_type, chunk_count, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            ''', (doc_id, kb_id, filename, content_type, chunk_count, beijing_time))
         else:
             cur.execute('''
-                INSERT INTO documents (id, kb_id, filename, content_type, chunk_count)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (doc_id, kb_id, filename, content_type, chunk_count))
+                INSERT INTO documents (id, kb_id, filename, content_type, chunk_count, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (doc_id, kb_id, filename, content_type, chunk_count, beijing_time))
         db.commit()
 
 
@@ -539,45 +636,46 @@ def delete_document(doc_id: str):
 
 def update_knowledge_base(kb_id: str, name: str = None, description: str = None):
     """更新知识库信息"""
+    beijing_time = get_beijing_time()
     with get_db() as db:
         cur = db.cursor()
         if name and description:
             if USE_POSTGRES:
                 cur.execute('''
                     UPDATE knowledge_bases 
-                    SET name = %s, description = %s, updated_at = CURRENT_TIMESTAMP
+                    SET name = %s, description = %s, updated_at = %s
                     WHERE id = %s
-                ''', (name, description, kb_id))
+                ''', (name, description, beijing_time, kb_id))
             else:
                 cur.execute('''
                     UPDATE knowledge_bases 
-                    SET name = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+                    SET name = ?, description = ?, updated_at = ?
                     WHERE id = ?
-                ''', (name, description, kb_id))
+                ''', (name, description, beijing_time, kb_id))
         elif name:
             if USE_POSTGRES:
                 cur.execute('''
                     UPDATE knowledge_bases 
-                    SET name = %s, updated_at = CURRENT_TIMESTAMP
+                    SET name = %s, updated_at = %s
                     WHERE id = %s
-                ''', (name, kb_id))
+                ''', (name, beijing_time, kb_id))
             else:
                 cur.execute('''
                     UPDATE knowledge_bases 
-                    SET name = ?, updated_at = CURRENT_TIMESTAMP
+                    SET name = ?, updated_at = ?
                     WHERE id = ?
-                ''', (name, kb_id))
+                ''', (name, beijing_time, kb_id))
         elif description:
             if USE_POSTGRES:
                 cur.execute('''
                     UPDATE knowledge_bases 
-                    SET description = %s, updated_at = CURRENT_TIMESTAMP
+                    SET description = %s, updated_at = %s
                     WHERE id = %s
-                ''', (description, kb_id))
+                ''', (description, beijing_time, kb_id))
             else:
                 cur.execute('''
                     UPDATE knowledge_bases 
-                    SET description = ?, updated_at = CURRENT_TIMESTAMP
+                    SET description = ?, updated_at = ?
                     WHERE id = ?
-                ''', (description, kb_id))
+                ''', (description, beijing_time, kb_id))
         db.commit()
