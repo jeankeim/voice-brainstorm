@@ -198,6 +198,22 @@ def init_db():
                 ON messages(session_id, created_at)
             ''')
             
+            # 访客使用限制表
+            print("[DB] 创建 visitor_usage 表...")
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS visitor_usage (
+                    visitor_id TEXT PRIMARY KEY,
+                    usage_date TEXT NOT NULL,
+                    usage_count INTEGER DEFAULT 0,
+                    updated_at TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE INDEX IF NOT EXISTS idx_visitor_usage_date 
+                ON visitor_usage(visitor_id, usage_date)
+            ''')
+            print("[DB] visitor_usage 表 OK")
+            
             db.commit()
             print("[DB] ========== 数据库初始化完成 ==========")
     except Exception as e:
@@ -679,3 +695,92 @@ def update_knowledge_base(kb_id: str, name: str = None, description: str = None)
                     WHERE id = ?
                 ''', (description, beijing_time, kb_id))
         db.commit()
+
+
+# ========== 访客使用限制 ==========
+
+import threading
+_usage_lock = threading.Lock()
+
+def get_visitor_usage(visitor_id: str, usage_date: str):
+    """获取访客某日的使用记录"""
+    with get_db() as db:
+        cur = db.cursor()
+        if USE_POSTGRES:
+            cur.execute('''
+                SELECT usage_count FROM visitor_usage 
+                WHERE visitor_id = %s AND usage_date = %s
+            ''', (visitor_id, usage_date))
+        else:
+            cur.execute('''
+                SELECT usage_count FROM visitor_usage 
+                WHERE visitor_id = ? AND usage_date = ?
+            ''', (visitor_id, usage_date))
+        row = cur.fetchone()
+        return row[0] if row else 0
+
+def increment_visitor_usage_db(visitor_id: str, usage_date: str) -> int:
+    """原子性增加访客使用次数，返回最新计数"""
+    with _usage_lock:
+        with get_db() as db:
+            cur = db.cursor()
+            beijing_time = get_beijing_time()
+            
+            if USE_POSTGRES:
+                # PostgreSQL: 使用 INSERT ... ON CONFLICT 实现原子性 upsert
+                cur.execute('''
+                    INSERT INTO visitor_usage (visitor_id, usage_date, usage_count, updated_at)
+                    VALUES (%s, %s, 1, %s)
+                    ON CONFLICT (visitor_id) DO UPDATE SET
+                        usage_count = CASE 
+                            WHEN visitor_usage.usage_date = %s 
+                            THEN visitor_usage.usage_count + 1 
+                            ELSE 1 
+                        END,
+                        usage_date = %s,
+                        updated_at = %s
+                    RETURNING usage_count
+                ''', (visitor_id, usage_date, beijing_time, usage_date, usage_date, beijing_time))
+                result = cur.fetchone()
+                new_count = result[0] if result else 1
+            else:
+                # SQLite: 先查询，再插入或更新
+                cur.execute('''
+                    SELECT usage_count FROM visitor_usage 
+                    WHERE visitor_id = ?
+                ''', (visitor_id,))
+                row = cur.fetchone()
+                
+                if row:
+                    # 存在记录，检查日期
+                    cur.execute('''
+                        SELECT usage_date FROM visitor_usage WHERE visitor_id = ?
+                    ''', (visitor_id,))
+                    current_date = cur.fetchone()[0]
+                    
+                    if current_date == usage_date:
+                        # 同一天，计数+1
+                        cur.execute('''
+                            UPDATE visitor_usage 
+                            SET usage_count = usage_count + 1, updated_at = ?
+                            WHERE visitor_id = ?
+                        ''', (beijing_time, visitor_id))
+                        new_count = row[0] + 1
+                    else:
+                        # 新的一天，重置计数
+                        cur.execute('''
+                            UPDATE visitor_usage 
+                            SET usage_date = ?, usage_count = 1, updated_at = ?
+                            WHERE visitor_id = ?
+                        ''', (usage_date, beijing_time, visitor_id))
+                        new_count = 1
+                else:
+                    # 新访客
+                    cur.execute('''
+                        INSERT INTO visitor_usage (visitor_id, usage_date, usage_count, updated_at)
+                        VALUES (?, ?, 1, ?)
+                    ''', (visitor_id, usage_date, beijing_time))
+                    new_count = 1
+            
+            db.commit()
+            return new_count

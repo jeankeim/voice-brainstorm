@@ -436,8 +436,9 @@ def chat():
 # ========== 访客使用限制配置 ==========
 # 每日免费使用次数限制
 DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "10"))
-# 访客使用记录: {visitor_id: {"count": int, "date": str(YYYY-MM-DD)}}
-visitor_usage = {}
+
+# 导入数据库函数
+from database import get_visitor_usage, increment_visitor_usage_db
 
 def check_visitor_limit(visitor_id):
     """检查访客是否超出使用限制。"""
@@ -445,34 +446,27 @@ def check_visitor_limit(visitor_id):
         return False, "缺少访客标识"
     
     today = get_beijing_time().strftime("%Y-%m-%d")
-    record = visitor_usage.get(visitor_id)
+    count = get_visitor_usage(visitor_id, today)
     
-    # 新访客或新的一天
-    if not record or record.get("date") != today:
-        visitor_usage[visitor_id] = {"count": 0, "date": today}
-        record = visitor_usage[visitor_id]
-    
-    if record["count"] >= DAILY_LIMIT:
+    if count >= DAILY_LIMIT:
         return False, f"今日免费次数已用完（{DAILY_LIMIT}次），请明天再来"
     
     return True, None
 
 def increment_visitor_usage(visitor_id):
-    """增加访客使用次数。"""
-    if visitor_id and visitor_id in visitor_usage:
-        visitor_usage[visitor_id]["count"] += 1
-        return visitor_usage[visitor_id]["count"]
-    return 0
+    """增加访客使用次数，返回最新计数。"""
+    if not visitor_id:
+        return 0
+    today = get_beijing_time().strftime("%Y-%m-%d")
+    return increment_visitor_usage_db(visitor_id, today)
 
 def get_visitor_remaining(visitor_id):
     """获取访客剩余次数。"""
-    today = get_beijing_time().strftime("%Y-%m-%d")
-    record = visitor_usage.get(visitor_id)
-    
-    if not record or record.get("date") != today:
+    if not visitor_id:
         return DAILY_LIMIT
-    
-    return max(0, DAILY_LIMIT - record["count"])
+    today = get_beijing_time().strftime("%Y-%m-%d")
+    count = get_visitor_usage(visitor_id, today)
+    return max(0, DAILY_LIMIT - count)
 
 
 @app.route("/api/check", methods=["GET"])
@@ -504,10 +498,9 @@ def get_usage():
             content_type="application/json"
         )
     
-    remaining = get_visitor_remaining(visitor_id)
     today = get_beijing_time().strftime("%Y-%m-%d")
-    record = visitor_usage.get(visitor_id, {})
-    used = record.get("count", 0) if record.get("date") == today else 0
+    used = get_visitor_usage(visitor_id, today)
+    remaining = max(0, DAILY_LIMIT - used)
     
     return Response(
         json.dumps({
