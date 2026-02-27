@@ -53,7 +53,12 @@ if USE_POSTGRES:
                     min_conn,
                     max_conn,
                     DATABASE_URL,
-                    cursor_factory=RealDictCursor
+                    cursor_factory=RealDictCursor,
+                    connect_timeout=10,
+                    keepalives=1,
+                    keepalives_idle=30,
+                    keepalives_interval=10,
+                    keepalives_count=5
                 )
                 print(f"[DB] PostgreSQL 连接池初始化成功 (min={min_conn}, max={max_conn})")
             except Exception as e:
@@ -70,15 +75,41 @@ if USE_POSTGRES:
     
     @contextmanager
     def get_db():
-        """PostgreSQL 连接上下文管理器（使用连接池）"""
+        """PostgreSQL 连接上下文管理器（使用连接池，带健康检查）"""
         pg_pool = get_pool()
         conn = None
-        try:
-            conn = pg_pool.getconn()
-            yield conn
-        finally:
-            if conn:
-                pg_pool.putconn(conn)
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                conn = pg_pool.getconn()
+                # 健康检查：执行简单查询确认连接有效
+                with conn.cursor() as cur:
+                    cur.execute('SELECT 1')
+                    cur.fetchone()
+                yield conn
+                return
+            except psycopg2.OperationalError as e:
+                # 连接失效，关闭并重试
+                print(f"[DB] 连接失效，重试 {retry_count + 1}/{max_retries}: {e}")
+                if conn:
+                    try:
+                        pg_pool.putconn(conn, close=True)
+                    except:
+                        pass
+                    conn = None
+                retry_count += 1
+                if retry_count >= max_retries:
+                    raise
+            except Exception:
+                raise
+            finally:
+                if conn:
+                    try:
+                        pg_pool.putconn(conn)
+                    except:
+                        pass
     
     def close_pool():
         """关闭连接池"""
