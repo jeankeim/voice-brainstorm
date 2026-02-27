@@ -24,18 +24,27 @@ class KnowledgeBaseManager {
     async loadKnowledgeBases() {
         try {
             const visitorId = this.getVisitorId();
+            console.log('[KB] 加载知识库列表, visitorId:', visitorId);
+            
             const resp = await fetch(`/api/knowledge-bases?visitor_id=${visitorId}`);
+            console.log('[KB] API 响应状态:', resp.status);
             
             if (!resp.ok) {
-                throw new Error('Failed to load knowledge bases');
+                const errText = await resp.text();
+                console.error('[KB] API 错误:', errText);
+                throw new Error('Failed to load knowledge bases: ' + errText);
             }
             
             const data = await resp.json();
+            console.log('[KB] API 返回数据:', data);
+            
             this.knowledgeBases = data.knowledge_bases || [];
+            console.log('[KB] 知识库数量:', this.knowledgeBases.length);
+            
             this.renderKnowledgeBaseList();
             return this.knowledgeBases;
         } catch (error) {
-            console.error('Load knowledge bases error:', error);
+            console.error('[KB] 加载知识库错误:', error);
             return [];
         }
     }
@@ -43,26 +52,34 @@ class KnowledgeBaseManager {
     // 创建知识库
     async createKnowledgeBase(name, description = '') {
         try {
+            const visitorId = this.getVisitorId();
+            console.log('[KB] 创建知识库, visitorId:', visitorId, 'name:', name);
+            
             const resp = await fetch('/api/knowledge-bases', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    visitor_id: this.getVisitorId(),
+                    visitor_id: visitorId,
                     name,
                     description
                 })
             });
             
+            console.log('[KB] 创建响应状态:', resp.status);
+            
             if (!resp.ok) {
                 const err = await resp.json();
+                console.error('[KB] 创建错误:', err);
                 throw new Error(err.error || 'Failed to create knowledge base');
             }
             
             const data = await resp.json();
+            console.log('[KB] 创建成功:', data);
+            
             await this.loadKnowledgeBases();
             return data;
         } catch (error) {
-            console.error('Create knowledge base error:', error);
+            console.error('[KB] 创建知识库错误:', error);
             alert('创建知识库失败: ' + error.message);
             throw error;
         }

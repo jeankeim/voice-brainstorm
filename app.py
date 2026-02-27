@@ -930,15 +930,23 @@ def create_kb():
     name = data.get('name')
     description = data.get('description', '')
     
+    print(f"[API] 创建知识库请求: user_id={user_id}, name={name}")
+    
     if not user_id:
+        print("[API] 错误: 缺少 visitor_id")
         return jsonify({'error': 'Missing visitor_id'}), 400
     if not name:
+        print("[API] 错误: 缺少 name")
         return jsonify({'error': 'Missing name'}), 400
     
     try:
         kb_id = create_knowledge_base(user_id, name, description)
+        print(f"[API] 知识库创建成功: {kb_id}")
         return jsonify({'id': kb_id, 'name': name, 'description': description})
     except Exception as e:
+        import traceback
+        print(f"[API] 创建知识库失败: {e}")
+        print(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 
 
@@ -946,13 +954,20 @@ def create_kb():
 def list_kbs():
     """获取用户的知识库列表"""
     user_id = request.args.get('visitor_id')
+    print(f"[API] 获取知识库列表: user_id={user_id}")
+    
     if not user_id:
+        print("[API] 错误: 缺少 visitor_id")
         return jsonify({'error': 'Missing visitor_id'}), 400
     
     try:
         kbs = get_user_knowledge_bases(user_id)
+        print(f"[API] 返回知识库数量: {len(kbs)}")
         return jsonify({'knowledge_bases': kbs})
     except Exception as e:
+        import traceback
+        print(f"[API] 获取知识库列表失败: {e}")
+        print(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 
 

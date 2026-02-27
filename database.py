@@ -266,12 +266,20 @@ def get_session(session_id: str):
 def init_vector_db():
     """初始化向量数据库表（仅 PostgreSQL）"""
     if not USE_POSTGRES:
+        print("[DB] SQLite 模式，跳过向量数据库初始化")
         return  # SQLite 使用 ChromaDB，不需要 pgvector
+    
+    print("[DB] PostgreSQL 模式: 初始化向量数据库...")
     
     with get_db() as db:
         cur = db.cursor()
-        # 启用 pgvector 扩展
-        cur.execute('CREATE EXTENSION IF NOT EXISTS vector')
+        try:
+            # 启用 pgvector 扩展
+            cur.execute('CREATE EXTENSION IF NOT EXISTS vector')
+            print("[DB] pgvector 扩展已启用")
+        except Exception as e:
+            print(f"[DB] 警告: 启用 pgvector 扩展失败: {e}")
+            # 继续执行，表可能仍然可以创建
         
         # 知识库表
         cur.execute('''
@@ -283,6 +291,7 @@ def init_vector_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        print("[DB] knowledge_bases 表已创建或已存在")
         
         # 文档表
         cur.execute('''
@@ -295,38 +304,43 @@ def init_vector_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        print("[DB] documents 表已创建或已存在")
         
         # 向量表
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS document_chunks (
-                id SERIAL PRIMARY KEY,
-                session_id TEXT,
-                kb_id TEXT,
-                doc_id TEXT,
-                content TEXT NOT NULL,
-                embedding vector(1536),
-                metadata JSONB,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # 创建向量索引
-        cur.execute('''
-            CREATE INDEX IF NOT EXISTS idx_document_chunks_embedding 
-            ON document_chunks USING ivfflat (embedding vector_cosine_ops)
-        ''')
-        
-        cur.execute('''
-            CREATE INDEX IF NOT EXISTS idx_document_chunks_kb 
-            ON document_chunks(kb_id)
-        ''')
-        
-        cur.execute('''
-            CREATE INDEX IF NOT EXISTS idx_document_chunks_session 
-            ON document_chunks(session_id)
-        ''')
+        try:
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS document_chunks (
+                    id SERIAL PRIMARY KEY,
+                    session_id TEXT,
+                    kb_id TEXT,
+                    doc_id TEXT,
+                    content TEXT NOT NULL,
+                    embedding vector(1536),
+                    metadata JSONB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            print("[DB] document_chunks 表已创建或已存在")
+            
+            # 创建向量索引
+            cur.execute('''
+                CREATE INDEX IF NOT EXISTS idx_document_chunks_embedding 
+                ON document_chunks USING ivfflat (embedding vector_cosine_ops)
+            ''')
+            cur.execute('''
+                CREATE INDEX IF NOT EXISTS idx_document_chunks_kb 
+                ON document_chunks(kb_id)
+            ''')
+            cur.execute('''
+                CREATE INDEX IF NOT EXISTS idx_document_chunks_session 
+                ON document_chunks(session_id)
+            ''')
+            print("[DB] 向量索引已创建")
+        except Exception as e:
+            print(f"[DB] 警告: 创建向量表失败: {e}")
         
         db.commit()
+        print("[DB] 向量数据库初始化完成")
 
 
 def create_knowledge_base(user_id: str, name: str, description: str = None) -> str:
@@ -334,15 +348,40 @@ def create_knowledge_base(user_id: str, name: str, description: str = None) -> s
     import uuid
     kb_id = f"kb_{uuid.uuid4().hex[:8]}"
     
+    print(f"[DB] 创建知识库: user_id={user_id}, name={name}, kb_id={kb_id}")
+    
     with get_db() as db:
         cur = db.cursor()
         if USE_POSTGRES:
+            # 确保表存在（防御性编程）
+            print("[DB] PostgreSQL 模式: 检查表是否存在")
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS knowledge_bases (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS documents (
+                    id TEXT PRIMARY KEY,
+                    kb_id TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    content_type TEXT,
+                    chunk_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
             cur.execute('''
                 INSERT INTO knowledge_bases (id, user_id, name, description)
                 VALUES (%s, %s, %s, %s)
             ''', (kb_id, user_id, name, description))
         else:
             # SQLite 不支持向量，但支持基础表结构
+            print("[DB] SQLite 模式: 检查并创建表")
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS knowledge_bases (
                     id TEXT PRIMARY KEY,
@@ -366,12 +405,16 @@ def create_knowledge_base(user_id: str, name: str, description: str = None) -> s
                 INSERT INTO knowledge_bases (id, user_id, name, description)
                 VALUES (?, ?, ?, ?)
             ''', (kb_id, user_id, name, description))
+            print(f"[DB] SQLite 插入成功")
         db.commit()
+        print(f"[DB] 事务提交成功")
     return kb_id
 
 
 def get_user_knowledge_bases(user_id: str):
     """获取用户的所有知识库"""
+    print(f"[DB] 查询知识库: user_id={user_id}")
+    
     with get_db() as db:
         cur = db.cursor()
         try:
@@ -390,8 +433,11 @@ def get_user_knowledge_bases(user_id: str):
                     ORDER BY created_at DESC
                 ''', (user_id,))
             rows = cur.fetchall()
-            return [dict(row) for row in rows]
-        except:
+            result = [dict(row) for row in rows]
+            print(f"[DB] 查询结果: {len(result)} 条记录")
+            return result
+        except Exception as e:
+            print(f"[DB] 查询失败: {e}")
             return []  # 表可能不存在
 
 
