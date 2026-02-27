@@ -32,7 +32,7 @@ WORKDIR /app
 COPY --from=builder /root/.local /root/.local
 
 # 复制应用代码（排除不必要的文件）
-COPY app.py database.py embedding.py knowledge_base.py retrieval.py ./
+COPY app.py database.py embedding.py knowledge_base.py retrieval.py config.py logger.py ./
 COPY templates/ ./templates/
 COPY static/ ./static/
 
