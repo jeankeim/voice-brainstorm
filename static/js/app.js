@@ -380,7 +380,7 @@
     }
 
     // ========== API调用（带重试机制） ==========
-    async function sendToAPIWithRetry(messages, maxRetries = 2) {
+    async function sendToAPIWithRetry(messages, sessionId, maxRetries = 2) {
         let lastError = null;
         
         for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -393,7 +393,7 @@
                     await new Promise(r => setTimeout(r, 1000)); // 等待 1 秒后重试
                 }
                 
-                const result = await sendToAPIInternal(messages);
+                const result = await sendToAPIInternal(messages, sessionId);
                 return result;
             } catch (error) {
                 lastError = error;
@@ -412,7 +412,7 @@
         }
     }
 
-    async function sendToAPIInternal(messages) {
+    async function sendToAPIInternal(messages, sessionId) {
         state.isStreaming = true;
         els.sendBtn.disabled = true;
 
@@ -428,7 +428,19 @@
                     "Content-Type": "application/json",
                     "Accept": "text/event-stream"
                 },
-                body: JSON.stringify({ messages, visitor_id: state.visitorId }),
+                body: JSON.stringify({ 
+                    messages, 
+                    visitor_id: state.visitorId, 
+                    session_id: sessionId,
+                    use_rag: kbManager?.useRAG || false,
+                    kb_ids: kbManager?.getSelectedKBIds() || []
+                }),
+            });
+            
+            // 调试日志
+            console.log("[RAG] 发送请求:", {
+                use_rag: kbManager?.useRAG || false,
+                kb_ids: kbManager?.getSelectedKBIds() || []
             });
             
             // 检查是否触发限制
@@ -512,9 +524,9 @@
     }
 
     // 对外暴露的 API 调用函数（带重试）
-    async function sendToAPI(messages) {
+    async function sendToAPI(messages, sessionId) {
         try {
-            return await sendToAPIWithRetry(messages);
+            return await sendToAPIWithRetry(messages, sessionId);
         } catch (error) {
             addMessageToDOM("ai", `出错了: ${error.message}`);
         }
@@ -534,9 +546,16 @@
         els.welcomeView.classList.add("hidden");
         els.chatView.classList.remove("hidden");
 
-        // 如果是新会话
+        // 如果是新会话，创建后端会话
         if (!state.sessionId) {
-            state.sessionId = Date.now().toString();
+            try {
+                const session = await sessionManager.createSession(text.slice(0, 30) + '...');
+                state.sessionId = session.id;
+                console.log("[前端] 创建新会话:", session.id);
+            } catch (err) {
+                console.error("创建会话失败:", err);
+                state.sessionId = Date.now().toString();
+            }
         }
 
         // 添加用户消息
@@ -547,8 +566,8 @@
         els.textInput.value = "";
         autoResizeTextarea();
 
-        // 发送到API
-        await sendToAPI(state.messages);
+        // 发送到API（包含session_id）
+        await sendToAPI(state.messages, state.sessionId);
     }
 
     // ========== 快捷操作 ==========
@@ -561,7 +580,7 @@
         state.messages.push({ role: "user", content: text });
         addMessageToDOM("user", text);
 
-        await sendToAPI(state.messages);
+        await sendToAPI(state.messages, state.sessionId);
     }
 
     function exportContent() {
@@ -589,69 +608,56 @@
         URL.revokeObjectURL(url);
     }
 
-    // ========== 本地存储 ==========
-    function autoSave() {
-        if (!state.sessionId || state.messages.length === 0) return;
-
-        const sessions = getSessions();
-        const firstUserMsg = state.messages.find(m => m.role === "user");
-        const title = firstUserMsg
-            ? firstUserMsg.content.slice(0, 50) + (firstUserMsg.content.length > 50 ? "..." : "")
-            : "新对话";
-
-        sessions[state.sessionId] = {
-            id: state.sessionId,
-            title,
-            messages: state.messages,
-            updatedAt: Date.now(),
-        };
-
-        localStorage.setItem("brainstorm_sessions", JSON.stringify(sessions));
-        renderHistory();
+    // ========== 后端存储 ==========
+    async function autoSave() {
+        // 后端自动保存，无需手动调用
+        // 消息已在后端数据库中，只需刷新历史列表
+        await renderHistory();
     }
 
-    function getSessions() {
+    async function loadSession(sessionId) {
         try {
-            return JSON.parse(localStorage.getItem("brainstorm_sessions") || "{}");
-        } catch {
-            return {};
+            const session = await sessionManager.loadSession(sessionId);
+            if (!session) return;
+
+            state.sessionId = sessionId;
+            // 转换消息格式
+            state.messages = session.messages.map(m => ({
+                role: m.role,
+                content: m.content,
+                image_url: m.image_url
+            }));
+
+            // 清空并重新渲染
+            els.chatMessages.innerHTML = "";
+            els.welcomeView.classList.add("hidden");
+            els.chatView.classList.remove("hidden");
+
+            for (const msg of state.messages) {
+                addMessageToDOM(msg.role === "assistant" ? "ai" : "user", msg.content, false);
+            }
+
+            if (state.messages.length >= 4) {
+                els.actionBar.classList.remove("hidden");
+            }
+
+            closeSidebar();
+            scrollToBottom();
+        } catch (error) {
+            console.error("加载会话失败:", error);
         }
     }
 
-    function loadSession(sessionId) {
-        const sessions = getSessions();
-        const session = sessions[sessionId];
-        if (!session) return;
-
-        state.sessionId = sessionId;
-        state.messages = session.messages;
-
-        // 清空并重新渲染
-        els.chatMessages.innerHTML = "";
-        els.welcomeView.classList.add("hidden");
-        els.chatView.classList.remove("hidden");
-
-        for (const msg of state.messages) {
-            addMessageToDOM(msg.role === "assistant" ? "ai" : "user", msg.content, false);
+    async function deleteSession(sessionId) {
+        try {
+            await sessionManager.deleteSession(sessionId);
+            if (state.sessionId === sessionId) {
+                newSession();
+            }
+            await renderHistory();
+        } catch (error) {
+            console.error("删除会话失败:", error);
         }
-
-        if (state.messages.length >= 4) {
-            els.actionBar.classList.remove("hidden");
-        }
-
-        closeSidebar();
-        scrollToBottom();
-    }
-
-    function deleteSession(sessionId) {
-        const sessions = getSessions();
-        delete sessions[sessionId];
-        localStorage.setItem("brainstorm_sessions", JSON.stringify(sessions));
-
-        if (state.sessionId === sessionId) {
-            newSession();
-        }
-        renderHistory();
     }
 
     function newSession() {
@@ -666,39 +672,43 @@
     }
 
     // ========== 历史记录渲染 ==========
-    function renderHistory() {
-        const sessions = getSessions();
-        const sorted = Object.values(sessions).sort((a, b) => b.updatedAt - a.updatedAt);
+    async function renderHistory() {
+        try {
+            const sessions = await sessionManager.getSessions();
 
-        if (sorted.length === 0) {
-            els.historyList.innerHTML = '<p class="empty-hint">暂无记录</p>';
-            return;
+            if (sessions.length === 0) {
+                els.historyList.innerHTML = '<p class="empty-hint">暂无记录</p>';
+                return;
+            }
+
+            els.historyList.innerHTML = sessions.map(s => `
+                <div class="history-item ${s.id === state.sessionId ? 'active' : ''}" data-id="${s.id}">
+                    <div class="history-item-title">${escapeHtml(s.title || '新对话')}</div>
+                    <div class="history-item-time">${sessionManager.formatTime(s.updated_at)}</div>
+                    <button class="history-item-delete" data-id="${s.id}" title="删除">&times;</button>
+                </div>
+            `).join("");
+
+            // 绑定事件
+            els.historyList.querySelectorAll(".history-item").forEach(el => {
+                el.addEventListener("click", (e) => {
+                    if (e.target.classList.contains("history-item-delete")) return;
+                    loadSession(el.dataset.id);
+                });
+            });
+
+            els.historyList.querySelectorAll(".history-item-delete").forEach(el => {
+                el.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    if (confirm("确定删除这条记录？")) {
+                        deleteSession(el.dataset.id);
+                    }
+                });
+            });
+        } catch (error) {
+            console.error("渲染历史记录失败:", error);
+            els.historyList.innerHTML = '<p class="empty-hint">加载失败</p>';
         }
-
-        els.historyList.innerHTML = sorted.map(s => `
-            <div class="history-item ${s.id === state.sessionId ? 'active' : ''}" data-id="${s.id}">
-                <div class="history-item-title">${escapeHtml(s.title)}</div>
-                <div class="history-item-time">${formatTime(s.updatedAt)}</div>
-                <button class="history-item-delete" data-id="${s.id}" title="删除">&times;</button>
-            </div>
-        `).join("");
-
-        // 绑定事件
-        els.historyList.querySelectorAll(".history-item").forEach(el => {
-            el.addEventListener("click", (e) => {
-                if (e.target.classList.contains("history-item-delete")) return;
-                loadSession(el.dataset.id);
-            });
-        });
-
-        els.historyList.querySelectorAll(".history-item-delete").forEach(el => {
-            el.addEventListener("click", (e) => {
-                e.stopPropagation();
-                if (confirm("确定删除这条记录？")) {
-                    deleteSession(el.dataset.id);
-                }
-            });
-        });
     }
 
     function formatTime(timestamp) {
@@ -761,7 +771,7 @@
         autoResizeTextarea();
 
         // 发送到API
-        await sendToAPI(state.messages);
+        await sendToAPI(state.messages, state.sessionId);
     }
 
     // ========== 文件上传 ==========
@@ -967,6 +977,101 @@
 
         initFileUpload();
         initExamplePrompts();
+        initKnowledgeBase();
+    }
+
+    // ========== 知识库管理 ==========
+    function initKnowledgeBase() {
+        // 侧边栏标签切换
+        document.querySelectorAll('.sidebar-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.sidebar-tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.sidebar-panel').forEach(p => p.classList.remove('active'));
+                
+                tab.classList.add('active');
+                const panelId = tab.dataset.tab === 'history' ? 'historyPanel' : 'knowledgePanel';
+                document.getElementById(panelId).classList.add('active');
+            });
+        });
+
+        // RAG 开关
+        const ragToggle = document.getElementById('rag-toggle');
+        if (ragToggle) {
+            ragToggle.addEventListener('click', () => {
+                const useRAG = kbManager.toggleRAG();
+                const statusBar = document.getElementById('rag-status-bar');
+                if (useRAG) {
+                    statusBar.classList.remove('hidden');
+                } else {
+                    statusBar.classList.add('hidden');
+                }
+            });
+        }
+
+        // 创建知识库按钮
+        const createKB = document.getElementById('createKB');
+        if (createKB) {
+            createKB.addEventListener('click', () => {
+                document.getElementById('kbModal').classList.remove('hidden');
+            });
+        }
+
+        // 关闭对话框
+        document.getElementById('closeKBModal')?.addEventListener('click', closeKBModal);
+        document.getElementById('cancelKB')?.addEventListener('click', closeKBModal);
+
+        // 确认创建
+        document.getElementById('confirmKB')?.addEventListener('click', async () => {
+            const name = document.getElementById('kbName').value.trim();
+            const desc = document.getElementById('kbDesc').value.trim();
+            
+            if (!name) {
+                alert('请输入知识库名称');
+                return;
+            }
+            
+            try {
+                await kbManager.createKnowledgeBase(name, desc);
+                closeKBModal();
+                document.getElementById('kbName').value = '';
+                document.getElementById('kbDesc').value = '';
+            } catch (e) {
+                console.error('创建知识库失败:', e);
+            }
+        });
+
+        // 编辑知识库对话框事件
+        document.getElementById('closeEditKBModal')?.addEventListener('click', closeEditKBModal);
+        document.getElementById('cancelEditKB')?.addEventListener('click', closeEditKBModal);
+        
+        document.getElementById('confirmEditKB')?.addEventListener('click', async () => {
+            const kbId = document.getElementById('editKbId').value;
+            const name = document.getElementById('editKbName').value.trim();
+            const desc = document.getElementById('editKbDesc').value.trim();
+            
+            if (!name) {
+                alert('请输入知识库名称');
+                return;
+            }
+            
+            try {
+                await kbManager.updateKnowledgeBase(kbId, name, desc);
+                closeEditKBModal();
+            } catch (e) {
+                console.error('更新知识库失败:', e);
+            }
+        });
+
+        // 加载知识库列表
+        kbManager.loadKnowledgeBases();
+    }
+
+    function closeKBModal() {
+        document.getElementById('kbModal').classList.add('hidden');
+    }
+
+    function closeEditKBModal() {
+        document.getElementById('editKBModal').classList.add('hidden');
     }
 
     // ========== 访客标识管理 ==========

@@ -8,17 +8,70 @@
 </head>
 <body>
     <div id="app">
-        <!-- 侧边栏：历史记录 -->
+        <!-- 侧边栏：历史记录和知识库 -->
         <aside id="sidebar" class="sidebar">
-            <div class="sidebar-header">
-                <h2>历史记录</h2>
-                <button id="closeSidebar" class="icon-btn" title="关闭">&times;</button>
+            <div class="sidebar-tabs">
+                <button class="sidebar-tab active" data-tab="history">历史记录</button>
+                <button class="sidebar-tab" data-tab="knowledge">知识库</button>
             </div>
-            <div id="historyList" class="history-list">
-                <p class="empty-hint">暂无记录</p>
+            <button id="closeSidebar" class="icon-btn sidebar-close" title="关闭">&times;</button>
+            
+            <!-- 历史记录面板 -->
+            <div id="historyPanel" class="sidebar-panel active">
+                <div id="historyList" class="history-list">
+                    <p class="empty-hint">暂无记录</p>
+                </div>
+            </div>
+            
+            <!-- 知识库面板 -->
+            <div id="knowledgePanel" class="sidebar-panel">
+                <div class="kb-toolbar">
+                    <button id="createKB" class="kb-create-btn">+ 新建知识库</button>
+                    <button id="rag-toggle" class="rag-toggle">RAG 关闭</button>
+                </div>
+                <div id="kb-list" class="kb-list">
+                    <p class="empty-hint">暂无知识库</p>
+                </div>
             </div>
         </aside>
         <div id="overlay" class="overlay"></div>
+        
+        <!-- 创建知识库对话框 -->
+        <div id="kbModal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>新建知识库</h3>
+                    <button id="closeKBModal" class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <input type="text" id="kbName" placeholder="知识库名称" class="modal-input">
+                    <textarea id="kbDesc" placeholder="知识库描述（可选）" class="modal-textarea" rows="3"></textarea>
+                </div>
+                <div class="modal-footer">
+                    <button id="cancelKB" class="modal-btn secondary">取消</button>
+                    <button id="confirmKB" class="modal-btn primary">创建</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 编辑知识库对话框 -->
+        <div id="editKBModal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>编辑知识库</h3>
+                    <button id="closeEditKBModal" class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="editKbId">
+                    <input type="text" id="editKbName" placeholder="知识库名称" class="modal-input">
+                    <textarea id="editKbDesc" placeholder="知识库描述（可选）" class="modal-textarea" rows="3"></textarea>
+                </div>
+                <div class="modal-footer">
+                    <button id="cancelEditKB" class="modal-btn secondary">取消</button>
+                    <button id="confirmEditKB" class="modal-btn primary">保存</button>
+                </div>
+            </div>
+        </div>
 
         <!-- 主界面 -->
         <main class="main">
@@ -86,6 +139,14 @@
                 <div id="chatMessages" class="chat-messages"></div>
             </div>
 
+            <!-- RAG 状态栏 -->
+            <div id="rag-status-bar" class="rag-status-bar hidden">
+                <span class="rag-label">RAG 知识库：</span>
+                <span id="selected-kbs" class="selected-kbs">
+                    <span class="kb-hint">未选择知识库</span>
+                </span>
+            </div>
+
             <!-- 输入区域 -->
             <div class="input-area">
                 <div class="input-row">
@@ -128,6 +189,8 @@
         </main>
     </div>
 
+    <script src="/static/js/session_manager.js"></script>
+    <script src="/static/js/knowledge_base.js"></script>
     <script src="/static/js/app.js"></script>
 </body>
 </html>

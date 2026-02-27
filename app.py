@@ -6,7 +6,7 @@ import uuid
 import io
 import wave
 from datetime import datetime
-from flask import Flask, render_template, request, Response, stream_with_context
+from flask import Flask, render_template, request, Response, stream_with_context, jsonify
 from dotenv import load_dotenv
 import boto3
 from botocore.config import Config
@@ -19,9 +19,30 @@ try:
 except ImportError:
     DASHSCOPE_ASR_AVAILABLE = False
 
+# 数据库导入
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from database import (
+    init_db, get_or_create_user, create_session, get_user_sessions,
+    get_session_messages, delete_session, update_session_title, add_message,
+    get_session, create_knowledge_base, get_user_knowledge_bases,
+    delete_knowledge_base, add_document, get_documents
+)
+
+# RAG 模块导入
+from embedding import get_embedding
+from knowledge_base import (
+    process_document, add_document_chunks, delete_document_vectors,
+    delete_knowledge_base_vectors
+)
+from retrieval import search_knowledge_bases, search_history_sessions
+
 load_dotenv()
 
 app = Flask(__name__)
+
+# 初始化数据库
+init_db()
 
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
 DASHSCOPE_HOST = "dashscope.aliyuncs.com"
@@ -202,6 +223,12 @@ def chat():
     data = request.json
     messages = data.get("messages", [])
     visitor_id = data.get("visitor_id")
+    session_id = data.get("session_id")
+    kb_ids = data.get("kb_ids", [])  # 启用的知识库 ID 列表
+    use_rag = data.get("use_rag", False)  # 是否启用 RAG
+    
+    # 调试日志
+    print(f"[RAG] 接收参数: use_rag={use_rag}, kb_ids={kb_ids}, visitor_id={visitor_id}")
     
     # 检查使用限制
     allowed, error_msg = check_visitor_limit(visitor_id)
@@ -218,6 +245,69 @@ def chat():
             status=500,
             content_type="application/json",
         )
+
+    # 保存最后一条用户消息到数据库
+    if session_id and messages:
+        last_msg = messages[-1]
+        if last_msg.get("role") == "user":
+            try:
+                add_message(
+                    session_id=session_id,
+                    role="user",
+                    content=last_msg.get("content", ""),
+                    image_url=last_msg.get("image_url")
+                )
+                print(f"[数据库] 保存用户消息到会话 {session_id}")
+            except Exception as e:
+                print(f"[数据库] 保存消息失败: {e}")
+    
+    # RAG 检索增强
+    rag_context = ""
+    if use_rag and messages:
+        last_user_msg = None
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                last_user_msg = msg.get("content", "")
+                break
+        
+        if last_user_msg:
+            try:
+                print(f"[RAG] 开始检索: {last_user_msg[:50]}...")
+                
+                # 知识库检索
+                kb_results = []
+                if kb_ids:
+                    kb_results = search_knowledge_bases(kb_ids, last_user_msg, top_k=5)
+                    print(f"[RAG] 知识库检索结果: {len(kb_results)} 条")
+                
+                # 历史会话检索
+                history_results = []
+                if visitor_id:
+                    history_results = search_history_sessions(visitor_id, last_user_msg, top_k=3)
+                    print(f"[RAG] 历史会话检索结果: {len(history_results)} 条")
+                
+                # 构建上下文
+                context_parts = []
+                if kb_results:
+                    context_parts.append("=== 知识库参考 ===")
+                    for i, r in enumerate(kb_results[:3], 1):
+                        source = r.get("metadata", {}).get("filename", "未知")
+                        context_parts.append(f"[{i}] 来源：{source}")
+                        context_parts.append(f"内容：{r['text'][:300]}...")
+                        context_parts.append("")
+                
+                if history_results:
+                    context_parts.append("=== 历史对话参考 ===")
+                    for i, r in enumerate(history_results[:2], 1):
+                        role = "用户" if r["role"] == "user" else "AI"
+                        context_parts.append(f"[{i}] {role}：{r['text'][:200]}...")
+                        context_parts.append("")
+                
+                if context_parts:
+                    rag_context = "\n".join(context_parts)
+                    print(f"[RAG] 上下文构建完成，长度: {len(rag_context)}")
+            except Exception as e:
+                print(f"[RAG] 检索失败: {e}")
 
     # Convert messages to qwen-vl format if needed
     converted_messages = []
@@ -243,13 +333,25 @@ def chat():
         else:
             converted_messages.append(msg)
 
-    full_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + converted_messages
+    # 构建系统提示词（融入 RAG 上下文）
+    system_content = SYSTEM_PROMPT
+    if rag_context:
+        system_content = f"""{SYSTEM_PROMPT}
+
+=== 参考信息 ===
+{rag_context}
+=== 参考信息结束 ===
+
+请基于以上参考信息回答用户的问题。如果参考信息不足以回答问题，请基于你的知识回答。"""
+    
+    full_messages = [{"role": "system", "content": system_content}] + converted_messages
     
     # Debug: print the messages being sent
-    print("Sending messages to API:", json.dumps(full_messages, ensure_ascii=False, indent=2))
+    print("Sending messages to API:", json.dumps(full_messages, ensure_ascii=False, indent=2)[:500] + "...")
 
     def generate():
         conn = None
+        full_ai_content = ""  # 收集完整 AI 回复
         try:
             conn, resp = call_dashscope_stream(full_messages)
 
@@ -266,6 +368,17 @@ def chat():
                         continue
                     data_str = line_str[5:].strip()
                     if data_str == "[DONE]":
+                        # 保存 AI 回复到数据库
+                        if session_id and full_ai_content:
+                            try:
+                                add_message(
+                                    session_id=session_id,
+                                    role="assistant",
+                                    content=full_ai_content
+                                )
+                                print(f"[数据库] 保存 AI 回复到会话 {session_id}")
+                            except Exception as e:
+                                print(f"[数据库] 保存 AI 回复失败: {e}")
                         yield b"data: [DONE]\n\n"
                         break
                     try:
@@ -284,6 +397,7 @@ def chat():
                             
                             print("Content:", content)  # Debug
                             if content:
+                                full_ai_content += content  # 收集内容
                                 # Use ensure_ascii=True so output is pure ASCII
                                 out = "data: " + json.dumps({"content": content}) + "\n\n"
                                 print("Yielding:", out)  # Debug
@@ -713,6 +827,286 @@ def convert_to_wav(audio_data):
         wav_file.writeframes(audio_data)
     
     return wav_buffer.getvalue()
+
+
+# ========== 会话管理 API ==========
+
+@app.route("/api/sessions", methods=["POST"])
+def create_new_session():
+    """创建新会话"""
+    data = request.json or {}
+    user_id = data.get('visitor_id')
+    title = data.get('title', '新对话')
+    
+    if not user_id:
+        return jsonify({'error': 'Missing visitor_id'}), 400
+    
+    # 确保用户存在
+    get_or_create_user(user_id)
+    
+    session_id = create_session(user_id, title)
+    return jsonify({'id': session_id, 'title': title})
+
+
+@app.route("/api/sessions", methods=["GET"])
+def list_sessions():
+    """获取用户的所有会话"""
+    user_id = request.args.get('visitor_id')
+    if not user_id:
+        return jsonify({'error': 'Missing visitor_id'}), 400
+    
+    sessions = get_user_sessions(user_id)
+    return jsonify({'sessions': sessions})
+
+
+@app.route("/api/sessions/<session_id>", methods=["GET"])
+def get_session_detail(session_id):
+    """获取会话详情和消息"""
+    user_id = request.args.get('visitor_id')
+    if not user_id:
+        return jsonify({'error': 'Missing visitor_id'}), 400
+    
+    # 验证会话所有权
+    session = get_session(session_id)
+    if not session or session['user_id'] != user_id:
+        return jsonify({'error': 'Session not found'}), 404
+    
+    messages = get_session_messages(session_id)
+    return jsonify({
+        'id': session_id,
+        'title': session.get('title'),
+        'messages': messages
+    })
+
+
+@app.route("/api/sessions/<session_id>", methods=["DELETE"])
+def delete_session_route(session_id):
+    """删除会话"""
+    user_id = request.args.get('visitor_id')
+    if not user_id:
+        return jsonify({'error': 'Missing visitor_id'}), 400
+    
+    # 验证会话所有权
+    session = get_session(session_id)
+    if not session or session['user_id'] != user_id:
+        return jsonify({'error': 'Session not found'}), 404
+    
+    delete_session(session_id)
+    return jsonify({'success': True})
+
+
+@app.route("/api/sessions/<session_id>/title", methods=["PUT"])
+def update_session_title_route(session_id):
+    """更新会话标题"""
+    user_id = request.args.get('visitor_id')
+    if not user_id:
+        return jsonify({'error': 'Missing visitor_id'}), 400
+    
+    data = request.json or {}
+    title = data.get('title')
+    if not title:
+        return jsonify({'error': 'Missing title'}), 400
+    
+    # 验证会话所有权
+    session = get_session(session_id)
+    if not session or session['user_id'] != user_id:
+        return jsonify({'error': 'Session not found'}), 404
+    
+    update_session_title(session_id, title)
+    return jsonify({'success': True})
+
+
+# ========== 知识库管理 API ==========
+
+@app.route("/api/knowledge-bases", methods=["POST"])
+def create_kb():
+    """创建知识库"""
+    data = request.json or {}
+    user_id = data.get('visitor_id')
+    name = data.get('name')
+    description = data.get('description', '')
+    
+    if not user_id:
+        return jsonify({'error': 'Missing visitor_id'}), 400
+    if not name:
+        return jsonify({'error': 'Missing name'}), 400
+    
+    try:
+        kb_id = create_knowledge_base(user_id, name, description)
+        return jsonify({'id': kb_id, 'name': name, 'description': description})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route("/api/knowledge-bases", methods=["GET"])
+def list_kbs():
+    """获取用户的知识库列表"""
+    user_id = request.args.get('visitor_id')
+    if not user_id:
+        return jsonify({'error': 'Missing visitor_id'}), 400
+    
+    try:
+        kbs = get_user_knowledge_bases(user_id)
+        return jsonify({'knowledge_bases': kbs})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route("/api/knowledge-bases/<kb_id>", methods=["DELETE"])
+def delete_kb(kb_id):
+    """删除知识库"""
+    user_id = request.args.get('visitor_id')
+    if not user_id:
+        return jsonify({'error': 'Missing visitor_id'}), 400
+    
+    try:
+        # 删除向量数据
+        delete_knowledge_base_vectors(kb_id)
+        # 删除数据库记录
+        delete_knowledge_base(kb_id, user_id)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route("/api/knowledge-bases/<kb_id>/documents", methods=["POST"])
+def upload_document(kb_id):
+    """上传文档到知识库"""
+    user_id = request.form.get('visitor_id')
+    if not user_id:
+        return jsonify({'error': 'Missing visitor_id'}), 400
+    
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'Empty filename'}), 400
+    
+    try:
+        # 保存临时文件
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
+            file.save(tmp.name)
+            tmp_path = tmp.name
+        
+        # 处理文档
+        content_type = file.content_type or 'application/octet-stream'
+        chunks = process_document(tmp_path, file.filename, content_type)
+        
+        # 生成嵌入
+        if chunks:
+            embeddings = []
+            for chunk in chunks:
+                emb = get_embedding(chunk['text'])
+                embeddings.append(emb)
+            
+            # 存储到向量数据库
+            doc_id = f"doc_{uuid.uuid4().hex[:8]}"
+            add_document_chunks(kb_id, doc_id, chunks, embeddings)
+            
+            # 记录到数据库
+            add_document(kb_id, doc_id, file.filename, content_type, len(chunks))
+        
+        # 清理临时文件
+        os.unlink(tmp_path)
+        
+        return jsonify({
+            'success': True,
+            'doc_id': doc_id,
+            'chunk_count': len(chunks)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route("/api/knowledge-bases/<kb_id>/documents", methods=["GET"])
+def list_documents(kb_id):
+    """获取知识库的文档列表"""
+    user_id = request.args.get('visitor_id')
+    if not user_id:
+        return jsonify({'error': 'Missing visitor_id'}), 400
+    
+    try:
+        docs = get_documents(kb_id)
+        return jsonify({'documents': docs})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route("/api/knowledge-bases/<kb_id>/documents/<doc_id>", methods=["DELETE"])
+def delete_document(kb_id, doc_id):
+    """删除知识库中的文档"""
+    user_id = request.args.get('visitor_id')
+    if not user_id:
+        return jsonify({'error': 'Missing visitor_id'}), 400
+    
+    try:
+        # 删除向量数据库中的文档片段
+        from knowledge_base import delete_document_vectors
+        delete_document_vectors(kb_id, doc_id)
+        
+        # 删除数据库记录
+        from database import delete_document as db_delete_document
+        db_delete_document(doc_id)
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route("/api/knowledge-bases/<kb_id>", methods=["PUT"])
+def update_knowledge_base(kb_id):
+    """更新知识库信息"""
+    data = request.json
+    user_id = data.get('visitor_id')
+    name = data.get('name')
+    description = data.get('description')
+    
+    if not user_id:
+        return jsonify({'error': 'Missing visitor_id'}), 400
+    
+    try:
+        from database import update_knowledge_base as db_update_kb
+        db_update_kb(kb_id, name=name, description=description)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ========== RAG 检索 API ==========
+
+@app.route("/api/rag/search", methods=["POST"])
+def rag_search():
+    """RAG 检索接口"""
+    data = request.json or {}
+    query = data.get('query')
+    kb_ids = data.get('kb_ids', [])
+    user_id = data.get('visitor_id')
+    
+    if not query:
+        return jsonify({'error': 'Missing query'}), 400
+    
+    try:
+        results = {
+            'query': query,
+            'knowledge_base_results': [],
+            'history_results': []
+        }
+        
+        # 知识库检索
+        if kb_ids:
+            kb_results = search_knowledge_bases(kb_ids, query, top_k=5)
+            results['knowledge_base_results'] = kb_results
+        
+        # 历史会话检索
+        if user_id:
+            history_results = search_history_sessions(user_id, query, top_k=3)
+            results['history_results'] = history_results
+        
+        return jsonify(results)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == "__main__":

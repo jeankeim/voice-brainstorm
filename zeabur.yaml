@@ -1,0 +1,27 @@
+version: "1.0"
+
+services:
+  web:
+    build:
+      dockerfile: Dockerfile
+    ports:
+      - port: 8080
+        targetPort: 8080
+    env:
+      - key: PORT
+        value: "8080"
+      - key: DASHSCOPE_API_KEY
+        required: true
+      - key: R2_ACCESS_KEY_ID
+        required: false
+      - key: R2_SECRET_ACCESS_KEY
+        required: false
+      - key: R2_BUCKET_NAME
+        required: false
+      - key: R2_ENDPOINT_URL
+        required: false
+      - key: DATABASE_URL
+        required: false
+    volumes:
+      - path: /app/data
+        mountPath: /app/data
