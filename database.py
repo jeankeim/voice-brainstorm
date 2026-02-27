@@ -17,7 +17,7 @@ if USE_POSTGRES:
     @contextmanager
     def get_db():
         """PostgreSQL 连接上下文管理器"""
-        conn = psycopg2.connect(DATABASE_URL)
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
         try:
             yield conn
         finally:
