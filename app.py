@@ -5,7 +5,25 @@ import ssl
 import uuid
 import io
 import wave
-from datetime import datetime
+from datetime import datetime, timedelta
+
+# 设置东八区时区（北京时间）
+try:
+    from zoneinfo import ZoneInfo
+    TZ_BEIJING = ZoneInfo("Asia/Shanghai")
+except ImportError:
+    try:
+        import pytz
+        TZ_BEIJING = pytz.timezone("Asia/Shanghai")
+    except ImportError:
+        TZ_BEIJING = None
+
+def get_beijing_time():
+    """获取北京时间"""
+    if TZ_BEIJING:
+        return datetime.now(TZ_BEIJING)
+    else:
+        return datetime.utcnow() + timedelta(hours=8)
 from flask import Flask, render_template, request, Response, stream_with_context, jsonify
 import boto3
 from botocore.config import Config
@@ -143,7 +161,7 @@ def upload_to_r2(file_data, filename, content_type):
     try:
         # Generate unique filename
         ext = filename.split('.')[-1] if '.' in filename else ''
-        unique_name = f"{datetime.now().strftime('%Y%m%d')}/{uuid.uuid4().hex[:8]}.{ext}" if ext else f"{datetime.now().strftime('%Y%m%d')}/{uuid.uuid4().hex[:8]}"
+        unique_name = f"{get_beijing_time().strftime('%Y%m%d')}/{uuid.uuid4().hex[:8]}.{ext}" if ext else f"{get_beijing_time().strftime('%Y%m%d')}/{uuid.uuid4().hex[:8]}"
         
         s3.put_object(
             Bucket=R2_BUCKET_NAME,
@@ -426,7 +444,7 @@ def check_visitor_limit(visitor_id):
     if not visitor_id:
         return False, "缺少访客标识"
     
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = get_beijing_time().strftime("%Y-%m-%d")
     record = visitor_usage.get(visitor_id)
     
     # 新访客或新的一天
@@ -448,7 +466,7 @@ def increment_visitor_usage(visitor_id):
 
 def get_visitor_remaining(visitor_id):
     """获取访客剩余次数。"""
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = get_beijing_time().strftime("%Y-%m-%d")
     record = visitor_usage.get(visitor_id)
     
     if not record or record.get("date") != today:
@@ -487,7 +505,7 @@ def get_usage():
         )
     
     remaining = get_visitor_remaining(visitor_id)
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = get_beijing_time().strftime("%Y-%m-%d")
     record = visitor_usage.get(visitor_id, {})
     used = record.get("count", 0) if record.get("date") == today else 0
     
