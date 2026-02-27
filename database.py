@@ -761,7 +761,10 @@ def get_visitor_usage(visitor_id: str, usage_date: str):
                 WHERE visitor_id = ? AND usage_date = ?
             ''', (visitor_id, usage_date))
         row = cur.fetchone()
-        return row[0] if row else 0
+        if row:
+            # RealDictCursor 返回字典，SQLite 返回元组
+            return row['usage_count'] if isinstance(row, dict) else row[0]
+        return 0
 
 def increment_visitor_usage_db(visitor_id: str, usage_date: str) -> int:
     """原子性增加访客使用次数，返回最新计数"""
@@ -786,7 +789,11 @@ def increment_visitor_usage_db(visitor_id: str, usage_date: str) -> int:
                     RETURNING usage_count
                 ''', (visitor_id, usage_date, beijing_time, usage_date, usage_date, beijing_time))
                 result = cur.fetchone()
-                new_count = result[0] if result else 1
+                if result:
+                    # RealDictCursor 返回字典
+                    new_count = result['usage_count'] if isinstance(result, dict) else result[0]
+                else:
+                    new_count = 1
             else:
                 # SQLite: 先查询，再插入或更新
                 cur.execute('''
@@ -800,7 +807,8 @@ def increment_visitor_usage_db(visitor_id: str, usage_date: str) -> int:
                     cur.execute('''
                         SELECT usage_date FROM visitor_usage WHERE visitor_id = ?
                     ''', (visitor_id,))
-                    current_date = cur.fetchone()[0]
+                    date_row = cur.fetchone()
+                    current_date = date_row[0] if date_row else None
                     
                     if current_date == usage_date:
                         # 同一天，计数+1
@@ -809,6 +817,7 @@ def increment_visitor_usage_db(visitor_id: str, usage_date: str) -> int:
                             SET usage_count = usage_count + 1, updated_at = ?
                             WHERE visitor_id = ?
                         ''', (beijing_time, visitor_id))
+                        # SQLite 返回元组
                         new_count = row[0] + 1
                     else:
                         # 新的一天，重置计数
