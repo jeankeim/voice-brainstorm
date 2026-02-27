@@ -24,9 +24,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ffmpeg \
         libpq5 \
-    && rm -rf /var/lib/apt/lists/* && \
-    apt-get clean && \
-    rm -rf /var/cache/apt/*
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -34,14 +32,7 @@ WORKDIR /app
 COPY --from=builder /root/.local /root/.local
 
 # 复制应用代码（排除不必要的文件）
-COPY app.py .
-COPY database.py .
-COPY embedding.py .
-COPY knowledge_base.py .
-COPY retrieval.py .
-COPY requirements.txt .
-COPY zeabur.yaml .
-COPY Dockerfile .
+COPY app.py database.py embedding.py knowledge_base.py retrieval.py ./
 COPY templates/ ./templates/
 COPY static/ ./static/
 
