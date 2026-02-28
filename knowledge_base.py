@@ -217,10 +217,12 @@ def add_chunks_to_pg(kb_id: str, doc_id: str, chunks: List[Dict], embeddings: Li
     
     for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
         metadata = {**chunk["metadata"], "doc_id": doc_id, "chunk_index": i}
+        # 清理 NUL 字符，避免 PostgreSQL 插入错误
+        text = chunk["text"].replace('\x00', '')
         cur.execute('''
             INSERT INTO document_chunks (kb_id, doc_id, content, embedding, metadata)
             VALUES (%s, %s, %s, %s, %s)
-        ''', (kb_id, doc_id, chunk["text"], embedding, json.dumps(metadata)))
+        ''', (kb_id, doc_id, text, embedding, json.dumps(metadata)))
     
     conn.commit()
     cur.close()
