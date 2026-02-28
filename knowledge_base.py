@@ -271,6 +271,93 @@ def delete_doc_from_pg(kb_id: str, doc_id: str):
     conn.close()
 
 
+# ========== 混合召回：BM25 关键词检索 ==========
+
+def search_bm25_pg(kb_id: str, query: str, top_k: int = 20) -> List[Dict]:
+    """使用 PostgreSQL 全文搜索进行 BM25 检索"""
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    
+    try:
+        # 使用 PostgreSQL 的全文搜索功能
+        # 将查询转换为 tsquery 格式
+        cur.execute('''
+            SELECT content, metadata, 
+                   ts_rank(to_tsvector('chinese', content), 
+                           plainto_tsquery('chinese', %s)) as score
+            FROM document_chunks
+            WHERE kb_id = %s
+              AND to_tsvector('chinese', content) @@ plainto_tsquery('chinese', %s)
+            ORDER BY score DESC
+            LIMIT %s
+        ''', (query, kb_id, query, top_k))
+        
+        matches = []
+        for row in cur.fetchall():
+            matches.append({
+                "text": row["content"],
+                "metadata": row["metadata"],
+                "score": float(row["score"]),
+                "source": "bm25"
+            })
+        return matches
+    except Exception as e:
+        print(f"[BM25搜索错误] {e}")
+        return []
+    finally:
+        cur.close()
+        conn.close()
+
+
+def search_bm25_chroma(kb_id: str, query: str, top_k: int = 20) -> List[Dict]:
+    """ChromaDB 的 BM25 检索（简单关键词匹配）"""
+    collection = get_or_create_collection(f"kb_{kb_id}")
+    if collection is None:
+        return []
+    
+    try:
+        # 获取所有文档
+        results = collection.get(include=["documents", "metadatas"])
+        if not results["documents"]:
+            return []
+        
+        # 简单关键词匹配
+        query_keywords = set(query.lower().split())
+        matches = []
+        
+        for i, doc in enumerate(results["documents"]):
+            if not doc:
+                continue
+            content_lower = doc.lower()
+            score = sum(1 for kw in query_keywords if kw in content_lower)
+            
+            if score > 0:
+                matches.append({
+                    "text": doc,
+                    "metadata": results["metadatas"][i] if results["metadatas"] else {},
+                    "score": score,
+                    "source": "bm25"
+                })
+        
+        # 按分数排序
+        matches.sort(key=lambda x: x["score"], reverse=True)
+        return matches[:top_k]
+    except Exception as e:
+        print(f"[BM25搜索错误] {e}")
+        return []
+
+
+def search_bm25(kb_id: str, query: str, top_k: int = 20) -> List[Dict]:
+    """BM25 关键词检索统一接口"""
+    if USE_POSTGRES:
+        return search_bm25_pg(kb_id, query, top_k)
+    else:
+        return search_bm25_chroma(kb_id, query, top_k)
+
+
 # ========== 统一接口 ==========
 
 def add_document_chunks(kb_id: str, doc_id: str, chunks: List[Dict], embeddings: List[List[float]]):
@@ -282,11 +369,68 @@ def add_document_chunks(kb_id: str, doc_id: str, chunks: List[Dict], embeddings:
 
 
 def search_knowledge_base(kb_id: str, query_embedding: List[float], top_k: int = 5) -> List[Dict]:
-    """搜索知识库"""
+    """搜索知识库（纯向量检索，保持向后兼容）"""
     if USE_POSTGRES:
         return search_pg(kb_id, query_embedding, top_k)
     else:
         return search_chroma(kb_id, query_embedding, top_k)
+
+
+def search_knowledge_base_hybrid(kb_id: str, query: str, query_embedding: List[float], 
+                                   top_k: int = 5, vector_weight: float = 0.5) -> List[Dict]:
+    """
+    混合召回：向量检索 + BM25 关键词检索
+    
+    Args:
+        kb_id: 知识库 ID
+        query: 查询文本
+        query_embedding: 查询向量
+        top_k: 返回结果数
+        vector_weight: 向量检索权重 (0-1)，默认 0.5 表示均等权重
+    
+    Returns:
+        融合排序后的结果列表
+    """
+    # 1. 向量检索
+    vector_results = search_knowledge_base(kb_id, query_embedding, top_k=20)
+    for r in vector_results:
+        r["source"] = "vector"
+        # 将距离转换为分数（距离越小分数越高）
+        r["score"] = 1.0 / (1.0 + r.get("distance", 0))
+    
+    # 2. BM25 关键词检索
+    bm25_results = search_bm25(kb_id, query, top_k=20)
+    
+    # 3. RRF 融合排序 (Reciprocal Rank Fusion)
+    k = 60  # RRF 常数
+    doc_scores = {}
+    
+    # 合并所有文档 ID
+    all_docs = {}
+    
+    for rank, doc in enumerate(vector_results):
+        doc_id = doc.get("metadata", {}).get("doc_id", "") + "_" + str(doc.get("metadata", {}).get("chunk_index", 0))
+        all_docs[doc_id] = doc
+        score = vector_weight * (1.0 / (k + rank + 1))
+        doc_scores[doc_id] = doc_scores.get(doc_id, 0) + score
+    
+    for rank, doc in enumerate(bm25_results):
+        doc_id = doc.get("metadata", {}).get("doc_id", "") + "_" + str(doc.get("metadata", {}).get("chunk_index", 0))
+        all_docs[doc_id] = doc
+        score = (1 - vector_weight) * (1.0 / (k + rank + 1))
+        doc_scores[doc_id] = doc_scores.get(doc_id, 0) + score
+    
+    # 按融合分数排序
+    sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
+    
+    # 构建最终结果
+    results = []
+    for doc_id, score in sorted_docs[:top_k]:
+        doc = all_docs[doc_id]
+        doc["hybrid_score"] = score
+        results.append(doc)
+    
+    return results
 
 
 def delete_document_vectors(kb_id: str, doc_id: str):

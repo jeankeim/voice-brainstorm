@@ -9,11 +9,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from embedding import get_embedding
-from knowledge_base import search_knowledge_base
+from knowledge_base import search_knowledge_base, search_knowledge_base_hybrid
 from database import get_session_messages, USE_POSTGRES
 
 
-def search_knowledge_bases(kb_ids: List[str], query: str, top_k: int = 5) -> List[Dict]:
+def search_knowledge_bases(kb_ids: List[str], query: str, top_k: int = 5, 
+                            use_hybrid: bool = True, vector_weight: float = 0.5) -> List[Dict]:
     """
     在多个知识库中检索相关内容
     
@@ -21,6 +22,8 @@ def search_knowledge_bases(kb_ids: List[str], query: str, top_k: int = 5) -> Lis
         kb_ids: 知识库 ID 列表
         query: 查询文本
         top_k: 每个知识库返回的最大结果数
+        use_hybrid: 是否使用混合召回（向量+BM25），默认 True
+        vector_weight: 向量检索权重 (0-1)，默认 0.5
     
     Returns:
         检索结果列表，按相关性排序
@@ -36,7 +39,15 @@ def search_knowledge_bases(kb_ids: List[str], query: str, top_k: int = 5) -> Lis
     all_results = []
     for kb_id in kb_ids:
         try:
-            results = search_knowledge_base(kb_id, query_embedding, top_k)
+            if use_hybrid:
+                # 混合召回：向量 + BM25
+                results = search_knowledge_base_hybrid(kb_id, query, query_embedding, 
+                                                        top_k=top_k, vector_weight=vector_weight)
+                print(f"[混合召回] 知识库 {kb_id}: 返回 {len(results)} 条结果")
+            else:
+                # 纯向量召回
+                results = search_knowledge_base(kb_id, query_embedding, top_k)
+            
             for r in results:
                 r["kb_id"] = kb_id
                 r["source"] = "knowledge_base"
@@ -44,8 +55,12 @@ def search_knowledge_bases(kb_ids: List[str], query: str, top_k: int = 5) -> Lis
         except Exception as e:
             print(f"[检索错误] 知识库 {kb_id}: {e}")
     
-    # 按相似度排序（距离越小越相关）
-    all_results.sort(key=lambda x: x.get("distance", float('inf')))
+    if use_hybrid:
+        # 混合召回已按融合分数排序，只需取 Top-K
+        all_results.sort(key=lambda x: x.get("hybrid_score", 0), reverse=True)
+    else:
+        # 纯向量召回按距离排序
+        all_results.sort(key=lambda x: x.get("distance", float('inf')))
     
     return all_results[:top_k * len(kb_ids)]
 
