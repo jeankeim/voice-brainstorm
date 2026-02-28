@@ -1232,9 +1232,9 @@ if __name__ == "__main__":
         key_path = os.path.join(os.path.dirname(__file__), "key.pem")
         if os.path.exists(cert_path) and os.path.exists(key_path):
             print("HTTPS mode on port %d" % port)
-            app.run(debug=True, host="0.0.0.0", port=port, ssl_context=(cert_path, key_path))
+            app.run(debug=True, host="0.0.0.0", port=port, ssl_context=(cert_path, key_path), threaded=True)
         else:
             print("Missing cert.pem/key.pem")
             sys.exit(1)
     else:
-        app.run(debug=False, host="0.0.0.0", port=port)
+        app.run(debug=False, host="0.0.0.0", port=port, threaded=True)

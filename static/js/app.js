@@ -506,9 +506,6 @@
             // 保存AI消息
             state.messages.push({ role: "assistant", content: fullContent });
             autoSave();
-            
-            // 增加使用次数
-            incrementUsageCount();
 
             // 显示操作按钮
             if (state.messages.length >= 4) {
@@ -568,6 +565,9 @@
         els.textInput.value = "";
         autoResizeTextarea();
 
+        // 增加使用次数（在发送消息前计数，避免SSE阻塞）
+        await incrementUsageCount();
+        
         // 发送到API（包含session_id）
         await sendToAPI(state.messages, state.sessionId);
     }
