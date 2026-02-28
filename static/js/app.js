@@ -939,7 +939,7 @@
         // 延迟显示引导，让用户先看到主界面
         setTimeout(() => {
             guideOverlay.classList.remove('hidden');
-        }, 800);
+        }, 400);
         
         // 绑定下一步按钮
         guideOverlay.querySelectorAll('.guide-next').forEach(btn => {
